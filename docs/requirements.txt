@@ -96,3 +96,4 @@ unidecode==1.1.1
     # via python-slugify
 urllib3==1.26.18
     # via requests
+setuptools>=70.0.0 # not directly required, pinned by Snyk to avoid a vulnerability
