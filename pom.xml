@@ -1520,7 +1520,7 @@
             <dependency>
                 <groupId>io.trino.benchto</groupId>
                 <artifactId>benchto-driver</artifactId>
-                <version>0.26</version>
+                <version>0.31</version>
             </dependency>
 
             <dependency>
@@ -2396,7 +2396,7 @@
                                     <include>org.yaml:snakeyaml:2.+</include>
                                 </includes>
                             </bannedDependencies>
-                            <requireProfileIdsExist />
+                            <requireProfileIdsExist/>
                             <requirePropertyDiverges>
                                 <property>project.description</property>
                             </requirePropertyDiverges>
