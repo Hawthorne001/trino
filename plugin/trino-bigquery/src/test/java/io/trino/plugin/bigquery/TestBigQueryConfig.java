@@ -36,7 +36,6 @@ public class TestBigQueryConfig
         assertRecordedDefaults(recordDefaults(BigQueryConfig.class)
                 .setProjectId(null)
                 .setParentProjectId(null)
-                .setParallelism(null)
                 .setViewExpireDuration(new Duration(24, HOURS))
                 .setSkipViewMaterialization(false)
                 .setViewMaterializationWithFilter(false)
@@ -44,6 +43,7 @@ public class TestBigQueryConfig
                 .setViewMaterializationDataset(null)
                 .setMaxReadRowsRetries(3)
                 .setCaseInsensitiveNameMatching(false)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(0, MILLISECONDS))
                 .setViewsCacheTtl(new Duration(15, MINUTES))
                 .setServiceCacheTtl(new Duration(3, MINUTES))
                 .setMetadataCacheTtl(new Duration(0, MILLISECONDS))
@@ -54,6 +54,7 @@ public class TestBigQueryConfig
                 .setQueryLabelName(null)
                 .setQueryLabelFormat(null)
                 .setProxyEnabled(false)
+                .setProjectionPushdownEnabled(true)
                 .setMetadataParallelism(2));
     }
 
@@ -63,7 +64,6 @@ public class TestBigQueryConfig
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("bigquery.project-id", "pid")
                 .put("bigquery.parent-project-id", "ppid")
-                .put("bigquery.parallelism", "20")
                 .put("bigquery.views-enabled", "true")
                 .put("bigquery.arrow-serialization.enabled", "false")
                 .put("bigquery.view-expire-duration", "30m")
@@ -73,6 +73,7 @@ public class TestBigQueryConfig
                 .put("bigquery.view-materialization-dataset", "vmdataset")
                 .put("bigquery.max-read-rows-retries", "10")
                 .put("bigquery.case-insensitive-name-matching", "true")
+                .put("bigquery.case-insensitive-name-matching.cache-ttl", "1h")
                 .put("bigquery.views-cache-ttl", "1m")
                 .put("bigquery.service-cache-ttl", "10d")
                 .put("bigquery.metadata.cache-ttl", "5d")
@@ -82,12 +83,12 @@ public class TestBigQueryConfig
                 .put("bigquery.job.label-format", "$TRACE_TOKEN")
                 .put("bigquery.rpc-proxy.enabled", "true")
                 .put("bigquery.metadata.parallelism", "31")
+                .put("bigquery.projection-pushdown-enabled", "false")
                 .buildOrThrow();
 
         BigQueryConfig expected = new BigQueryConfig()
                 .setProjectId("pid")
                 .setParentProjectId("ppid")
-                .setParallelism(20)
                 .setViewsEnabled(true)
                 .setArrowSerializationEnabled(false)
                 .setViewExpireDuration(new Duration(30, MINUTES))
@@ -97,6 +98,7 @@ public class TestBigQueryConfig
                 .setViewMaterializationDataset("vmdataset")
                 .setMaxReadRowsRetries(10)
                 .setCaseInsensitiveNameMatching(true)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(1, HOURS))
                 .setViewsCacheTtl(new Duration(1, MINUTES))
                 .setServiceCacheTtl(new Duration(10, DAYS))
                 .setMetadataCacheTtl(new Duration(5, DAYS))
@@ -105,6 +107,7 @@ public class TestBigQueryConfig
                 .setQueryLabelName("trino_job_name")
                 .setQueryLabelFormat("$TRACE_TOKEN")
                 .setProxyEnabled(true)
+                .setProjectionPushdownEnabled(false)
                 .setMetadataParallelism(31);
 
         assertFullMapping(properties, expected);
@@ -133,5 +136,12 @@ public class TestBigQueryConfig
                 .validate())
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessage("bigquery.views-enabled config property must be enabled when view materialization with filter is enabled");
+
+        assertThatThrownBy(() -> new BigQueryConfig()
+                .setCaseInsensitiveNameMatching(false)
+                .setCaseInsensitiveNameMatchingCacheTtl(new Duration(30, MINUTES))
+                .validate())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("bigquery.case-insensitive-name-matching config must be enabled when case insensitive name matching cache TTL is set");
     }
 }

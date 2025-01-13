@@ -28,7 +28,6 @@ import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.sql.ir.Comparison;
 import io.trino.sql.ir.Expression;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.Row;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.Symbol;
@@ -92,7 +91,7 @@ import static io.trino.spi.connector.SortOrder.ASC_NULLS_FIRST;
 import static io.trino.spi.connector.SortOrder.ASC_NULLS_LAST;
 import static io.trino.spi.connector.SortOrder.DESC_NULLS_FIRST;
 import static io.trino.spi.connector.SortOrder.DESC_NULLS_LAST;
-import static io.trino.sql.ir.Comparison.Operator.IS_DISTINCT_FROM;
+import static io.trino.sql.ir.Comparison.Operator.IDENTICAL;
 import static io.trino.sql.planner.assertions.MatchResult.NO_MATCH;
 import static io.trino.sql.planner.assertions.MatchResult.match;
 import static io.trino.sql.planner.assertions.StrictAssignedSymbolsMatcher.actualAssignments;
@@ -151,6 +150,21 @@ public final class PlanMatchPattern
                         sourceFragmentIds,
                         Optional.empty(),
                         Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()));
+    }
+
+    public static PlanMatchPattern remoteSource(
+            List<PlanFragmentId> sourceFragmentIds,
+            List<String> outputSymbols,
+            ExchangeNode.Type exchangeType)
+    {
+        return node(RemoteSourceNode.class)
+                .with(new RemoteSourceMatcher(
+                        sourceFragmentIds,
+                        Optional.of(outputSymbols),
+                        Optional.empty(),
+                        Optional.of(exchangeType),
                         Optional.empty()));
     }
 
@@ -292,6 +306,19 @@ public final class PlanMatchPattern
         aggregations.entrySet().forEach(
                 aggregation -> result.withAlias(aggregation.getKey(), new AggregationFunctionMatcher(aggregation.getValue())));
         return result;
+    }
+
+    public static PlanMatchPattern aggregation(
+            GroupingSetDescriptor groupingSets,
+            Map<String, ExpectedValueProvider<AggregationFunction>> aggregations,
+            PlanMatchPattern source)
+    {
+        return aggregation(
+                groupingSets,
+                aggregations.entrySet().stream().collect(toImmutableMap(entry -> Optional.of(entry.getKey()), Map.Entry::getValue)),
+                Optional.empty(),
+                Step.SINGLE,
+                source);
     }
 
     public static PlanMatchPattern aggregation(
@@ -1066,9 +1093,29 @@ public final class PlanMatchPattern
                 Optional.empty());
     }
 
+    public static ExpectedValueProvider<AggregationFunction> aggregationFunction(String name, boolean distinct, List<PlanTestSymbol> args, String filter)
+    {
+        return new AggregationFunctionProvider(
+                name,
+                distinct,
+                args,
+                ImmutableList.of(),
+                Optional.of(symbol(filter)));
+    }
+
     public static ExpectedValueProvider<WindowFunction> windowFunction(String name, List<String> args, WindowNode.Frame frame)
     {
-        return new WindowFunctionProvider(name, frame, toSymbolAliases(args));
+        return windowFunction(name, args, frame, ImmutableList.of());
+    }
+
+    public static ExpectedValueProvider<WindowFunction> windowFunction(String name, List<String> args, WindowNode.Frame frame, List<PlanMatchPattern.Ordering> orderBy)
+    {
+        return windowFunction(name, args, frame, orderBy, false);
+    }
+
+    public static ExpectedValueProvider<WindowFunction> windowFunction(String name, List<String> args, WindowNode.Frame frame, List<PlanMatchPattern.Ordering> orderBy, boolean distinct)
+    {
+        return new WindowFunctionProvider(name, frame, toSymbolAliases(args), orderBy, distinct);
     }
 
     public static List<Expression> toSymbolReferences(List<PlanTestSymbol> aliases, SymbolAliases symbolAliases)
@@ -1209,11 +1256,10 @@ public final class PlanMatchPattern
         {
             Expression probeMapped = symbolMapper(aliases).map(probe);
             if (nullAllowed) {
-                return new Not(
-                        new Comparison(
-                                IS_DISTINCT_FROM,
-                                probeMapped,
-                                build.toSymbol(aliases).toSymbolReference()));
+                return new Comparison(
+                        IDENTICAL,
+                        probeMapped,
+                        build.toSymbol(aliases).toSymbolReference());
             }
             return new Comparison(
                     operator,

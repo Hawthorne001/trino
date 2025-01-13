@@ -672,9 +672,10 @@ public class Analysis
                 .collect(toImmutableSet());
     }
 
-    public ResolvedFunction getResolvedFunction(Node node)
+    public Optional<ResolvedFunction> getResolvedFunction(Node node)
     {
-        return resolvedFunctions.get(NodeRef.of(node)).getFunction();
+        return Optional.ofNullable(resolvedFunctions.get(NodeRef.of(node)))
+                .map(RoutineEntry::getFunction);
     }
 
     public void addResolvedFunction(Node node, ResolvedFunction function, String authorization)
@@ -1841,6 +1842,8 @@ public class Analysis
         private final List<ColumnHandle> dataColumnHandles;
         private final List<ColumnHandle> redistributionColumnHandles;
         private final List<List<ColumnHandle>> mergeCaseColumnHandles;
+        // Case number map to columns
+        private final Multimap<Integer, ColumnHandle> updateCaseColumnHandles;
         private final Set<ColumnHandle> nonNullableColumnHandles;
         private final Map<ColumnHandle, Integer> columnHandleFieldNumbers;
         private final RowType mergeRowType;
@@ -1856,6 +1859,7 @@ public class Analysis
                 List<ColumnHandle> dataColumnHandles,
                 List<ColumnHandle> redistributionColumnHandles,
                 List<List<ColumnHandle>> mergeCaseColumnHandles,
+                Multimap<Integer, ColumnHandle> updateCaseColumnHandles,
                 Set<ColumnHandle> nonNullableColumnHandles,
                 Map<ColumnHandle, Integer> columnHandleFieldNumbers,
                 RowType mergeRowType,
@@ -1870,6 +1874,7 @@ public class Analysis
             this.dataColumnHandles = requireNonNull(dataColumnHandles, "dataColumnHandles is null");
             this.redistributionColumnHandles = requireNonNull(redistributionColumnHandles, "redistributionColumnHandles is null");
             this.mergeCaseColumnHandles = requireNonNull(mergeCaseColumnHandles, "mergeCaseColumnHandles is null");
+            this.updateCaseColumnHandles = requireNonNull(updateCaseColumnHandles, "updateCaseColumnHandles is null");
             this.nonNullableColumnHandles = requireNonNull(nonNullableColumnHandles, "nonNullableColumnHandles is null");
             this.columnHandleFieldNumbers = requireNonNull(columnHandleFieldNumbers, "columnHandleFieldNumbers is null");
             this.mergeRowType = requireNonNull(mergeRowType, "mergeRowType is null");
@@ -1903,6 +1908,11 @@ public class Analysis
         public List<List<ColumnHandle>> getMergeCaseColumnHandles()
         {
             return mergeCaseColumnHandles;
+        }
+
+        public Multimap<Integer, ColumnHandle> getUpdateCaseColumnHandles()
+        {
+            return updateCaseColumnHandles;
         }
 
         public Set<ColumnHandle> getNonNullableColumnHandles()

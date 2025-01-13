@@ -35,7 +35,7 @@ import static java.util.concurrent.TimeUnit.HOURS;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
-@DefunctConfig("bigquery.case-insensitive-name-matching.cache-ttl")
+@DefunctConfig("bigquery.parallelism")
 public class BigQueryConfig
 {
     public static final int DEFAULT_MAX_READ_ROWS_RETRIES = 3;
@@ -44,7 +44,6 @@ public class BigQueryConfig
 
     private Optional<String> projectId = Optional.empty();
     private Optional<String> parentProjectId = Optional.empty();
-    private Optional<Integer> parallelism = Optional.empty();
     private boolean viewsEnabled;
     private boolean arrowSerializationEnabled = true;
     private Duration viewExpireDuration = new Duration(24, HOURS);
@@ -54,6 +53,7 @@ public class BigQueryConfig
     private Optional<String> viewMaterializationDataset = Optional.empty();
     private int maxReadRowsRetries = DEFAULT_MAX_READ_ROWS_RETRIES;
     private boolean caseInsensitiveNameMatching;
+    private Duration caseInsensitiveNameMatchingCacheTtl = new Duration(0, MILLISECONDS);
     private Duration viewsCacheTtl = new Duration(15, MINUTES);
     private Duration serviceCacheTtl = new Duration(3, MINUTES);
     private Duration metadataCacheTtl = new Duration(0, MILLISECONDS);
@@ -63,6 +63,7 @@ public class BigQueryConfig
     private String queryLabelName;
     private String queryLabelFormat;
     private boolean proxyEnabled;
+    private boolean projectionPushDownEnabled = true;
     private int metadataParallelism = 2;
 
     public Optional<String> getProjectId()
@@ -88,20 +89,6 @@ public class BigQueryConfig
     public BigQueryConfig setParentProjectId(String parentProjectId)
     {
         this.parentProjectId = Optional.ofNullable(parentProjectId);
-        return this;
-    }
-
-    public Optional<Integer> getParallelism()
-    {
-        return parallelism;
-    }
-
-    @Config("bigquery.parallelism")
-    @ConfigDescription("The number of partitions to split the data into.")
-    public BigQueryConfig setParallelism(Integer parallelism)
-    {
-        this.parallelism = Optional.ofNullable(parallelism);
-
         return this;
     }
 
@@ -225,6 +212,21 @@ public class BigQueryConfig
     }
 
     @NotNull
+    @MinDuration("0ms")
+    public Duration getCaseInsensitiveNameMatchingCacheTtl()
+    {
+        return caseInsensitiveNameMatchingCacheTtl;
+    }
+
+    @Config("bigquery.case-insensitive-name-matching.cache-ttl")
+    @ConfigDescription("Duration for which case insensitive schema and table names are cached. Set to 0ms to disable the cache.")
+    public BigQueryConfig setCaseInsensitiveNameMatchingCacheTtl(Duration caseInsensitiveNameMatchingCacheTtl)
+    {
+        this.caseInsensitiveNameMatchingCacheTtl = caseInsensitiveNameMatchingCacheTtl;
+        return this;
+    }
+
+    @NotNull
     @MinDuration("0m")
     public Duration getViewsCacheTtl()
     {
@@ -341,6 +343,19 @@ public class BigQueryConfig
         return this;
     }
 
+    public boolean isProjectionPushdownEnabled()
+    {
+        return projectionPushDownEnabled;
+    }
+
+    @Config("bigquery.projection-pushdown-enabled")
+    @ConfigDescription("Dereference push down for ROW type")
+    public BigQueryConfig setProjectionPushdownEnabled(boolean projectionPushDownEnabled)
+    {
+        this.projectionPushDownEnabled = projectionPushDownEnabled;
+        return this;
+    }
+
     @Min(1)
     @Max(32)
     public int getMetadataParallelism()
@@ -366,6 +381,9 @@ public class BigQueryConfig
         }
         if (viewMaterializationWithFilter) {
             checkState(viewsEnabled, "%s config property must be enabled when view materialization with filter is enabled", VIEWS_ENABLED);
+        }
+        if (!caseInsensitiveNameMatchingCacheTtl.isZero()) {
+            checkState(caseInsensitiveNameMatching, "bigquery.case-insensitive-name-matching config must be enabled when case insensitive name matching cache TTL is set");
         }
     }
 }

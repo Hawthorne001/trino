@@ -82,7 +82,7 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
 import static io.trino.spi.StandardErrorCode.ALREADY_EXISTS;
 import static io.trino.spi.StandardErrorCode.DIVISION_BY_ZERO;
 import static io.trino.spi.connector.SaveMode.IGNORE;
@@ -368,6 +368,12 @@ public abstract class BaseDataDefinitionTaskTest
         }
 
         @Override
+        public Optional<Type> getSupportedType(Session session, CatalogHandle catalogHandle, Map<String, Object> tableProperties, Type type)
+        {
+            return Optional.empty();
+        }
+
+        @Override
         public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column)
         {
             SchemaTableName tableName = table.getSchemaTableName();
@@ -539,6 +545,12 @@ public abstract class BaseDataDefinitionTaskTest
         public Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName)
         {
             return Optional.ofNullable(views.get(viewName.asSchemaTableName()));
+        }
+
+        @Override
+        public boolean isView(Session session, QualifiedObjectName viewName)
+        {
+            return getView(session, viewName).isPresent();
         }
 
         @Override

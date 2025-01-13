@@ -14,6 +14,8 @@
 package io.trino.plugin.iceberg.catalog.rest;
 
 import com.google.common.collect.ImmutableMap;
+import io.trino.cache.EvictableCacheBuilder;
+import io.trino.metastore.TableInfo;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.iceberg.CommitTaskData;
 import io.trino.plugin.iceberg.IcebergMetadata;
@@ -25,20 +27,28 @@ import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
+import io.trino.spi.type.TestingTypeManager;
+import org.apache.iceberg.exceptions.BadRequestException;
 import org.apache.iceberg.rest.DelegatingRestSessionCatalog;
 import org.apache.iceberg.rest.RESTSessionCatalog;
 import org.assertj.core.util.Files;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.Map;
+import java.util.Optional;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.airlift.json.JsonCodec.jsonCodec;
+import static io.trino.metastore.TableInfo.ExtendedRelationType.OTHER_VIEW;
 import static io.trino.plugin.iceberg.catalog.rest.IcebergRestCatalogConfig.SessionType.NONE;
 import static io.trino.plugin.iceberg.catalog.rest.RestCatalogTestUtils.backendCatalog;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.util.Locale.ENGLISH;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -47,6 +57,11 @@ public class TestTrinoRestCatalog
 {
     @Override
     protected TrinoCatalog createTrinoCatalog(boolean useUniqueTableLocations)
+    {
+        return createTrinoRestCatalog(useUniqueTableLocations, ImmutableMap.of());
+    }
+
+    private static TrinoRestCatalog createTrinoRestCatalog(boolean useUniqueTableLocations, Map<String, String> properties)
     {
         File warehouseLocation = Files.newTemporaryFolder();
         warehouseLocation.deleteOnExit();
@@ -57,17 +72,20 @@ public class TestTrinoRestCatalog
                 .delegate(backendCatalog(warehouseLocation))
                 .build();
 
-        restSessionCatalog.initialize(catalogName, ImmutableMap.of());
+        restSessionCatalog.initialize(catalogName, properties);
 
-        return new TrinoRestCatalog(restSessionCatalog, new CatalogName(catalogName), NONE, "test", useUniqueTableLocations);
-    }
-
-    @Test
-    @Override
-    public void testView()
-    {
-        assertThatThrownBy(super::testView)
-                .hasMessageContaining("createView is not supported for Iceberg REST catalog");
+        return new TrinoRestCatalog(
+                restSessionCatalog,
+                new CatalogName(catalogName),
+                NONE,
+                ImmutableMap.of(),
+                false,
+                "test",
+                new TestingTypeManager(),
+                useUniqueTableLocations,
+                false,
+                EvictableCacheBuilder.newBuilder().expireAfterWrite(1000, MILLISECONDS).shareNothingWhenDisabled().build(),
+                EvictableCacheBuilder.newBuilder().expireAfterWrite(1000, MILLISECONDS).shareNothingWhenDisabled().build());
     }
 
     @Test
@@ -99,7 +117,12 @@ public class TestTrinoRestCatalog
                     (connectorIdentity, fileIoProperties) -> {
                         throw new UnsupportedOperationException();
                     },
-                    new TableStatisticsWriter(new NodeVersion("test-version")));
+                    new TableStatisticsWriter(new NodeVersion("test-version")),
+                    Optional.empty(),
+                    false,
+                    _ -> false,
+                    newDirectExecutorService(),
+                    directExecutor());
             assertThat(icebergMetadata.schemaExists(SESSION, namespace)).as("icebergMetadata.schemaExists(namespace)")
                     .isTrue();
             assertThat(icebergMetadata.schemaExists(SESSION, schema)).as("icebergMetadata.schemaExists(schema)")
@@ -111,5 +134,29 @@ public class TestTrinoRestCatalog
         finally {
             catalog.dropNamespace(SESSION, namespace);
         }
+    }
+
+    @Test
+    public void testPrefix()
+    {
+        TrinoCatalog catalog = createTrinoRestCatalog(false, ImmutableMap.of("prefix", "dev"));
+
+        String namespace = "testPrefixNamespace" + randomNameSuffix();
+
+        assertThatThrownBy(() ->
+                catalog.createNamespace(
+                        SESSION,
+                        namespace,
+                        defaultNamespaceProperties(namespace),
+                        new TrinoPrincipal(PrincipalType.USER, SESSION.getUser())))
+                .isInstanceOf(BadRequestException.class)
+                .as("should fail as the prefix dev is not implemented for the current endpoint")
+                .hasMessageContaining("Malformed request: No route for request: POST v1/dev/namespaces");
+    }
+
+    @Override
+    protected TableInfo.ExtendedRelationType getViewType()
+    {
+        return OTHER_VIEW;
     }
 }

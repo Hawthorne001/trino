@@ -756,7 +756,7 @@ public class TestHashDistributionSplitAssigner
                 partitionToNodeMap.ifPresent(partitionToNode -> {
                     if (!taskDescriptor.getSplits().getSplitsFlat().isEmpty()) {
                         InternalNode node = partitionToNode.get(partitionId);
-                        assertThat(nodeRequirements.getAddresses()).containsExactly(node.getHostAndPort());
+                        assertThat(nodeRequirements.getAddress()).hasValue(node.getHostAndPort());
                     }
                 });
                 Set<Integer> taskDescriptorSplitIds = new HashSet<>();
@@ -895,7 +895,6 @@ public class TestHashDistributionSplitAssigner
         }
     }
 
-    @SuppressWarnings("unused")
     private record PartitionMapping(Set<Integer> sourcePartitions, int taskPartitionCount)
     {
         private PartitionMapping

@@ -19,11 +19,15 @@ Storage file system support:
 * - Property
   - Description
 * - `fs.native-gcs.enabled`
-  - Activate the native implementation for Google Cloud Storage support, and
-    deactivate all [legacy support](file-system-legacy). Defaults to `false`.
-    Must be set to `true` for all other properties be used.
+  - Activate the native implementation for Google Cloud Storage support.
+    Defaults to `false`. Set to `true` to use Google Cloud Storage and enable
+    all other properties.
 * - `gcs.project-id`
   - Identifier for the project on Google Cloud Storage.
+* - `gcs.endpoint`
+  - Optional URL for the Google Cloud Storage endpoint. Configure this property
+    if your storage is accessed using a custom URL, for example
+    `http://storage.example.com:8000`.
 * - `gcs.client.max-retries`
   - Maximum number of RPC attempts. Defaults to 20.
 * - `gcs.client.backoff-scale-factor`
@@ -48,6 +52,9 @@ Storage file system support:
 * - `gcs.batch-size`
   - Number of blobs to delete per batch. Defaults to 100. [Recommended batch
     size](https://cloud.google.com/storage/docs/batch) is 100.
+* - `gcs.application-id`
+  - Specify the application identifier appended to the `User-Agent` header
+    for all requests sent to Google Cloud Storage. Defaults to `Trino`.
 :::
 
 ## Authentication

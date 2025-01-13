@@ -32,7 +32,6 @@ import static io.trino.plugin.iceberg.IcebergTestUtils.checkParquetFileSorting;
 import static io.trino.plugin.iceberg.IcebergTestUtils.withSmallRowGroups;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestIcebergParquetConnectorTest
         extends BaseIcebergConnectorTest
@@ -61,8 +60,7 @@ public class TestIcebergParquetConnectorTest
     @Test
     public void testRowGroupResetDictionary()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_row_group_reset_dictionary",
                 "(plain_col varchar, dict_col int)")) {
             String tableName = table.getName();
@@ -71,7 +69,7 @@ public class TestIcebergParquetConnectorTest
                     .collect(Collectors.joining(", "));
             assertUpdate(withSmallRowGroups(getSession()), "INSERT INTO " + tableName + " VALUES " + values, 100);
 
-            MaterializedResult result = getDistributedQueryRunner().execute(String.format("SELECT * FROM %s", tableName));
+            MaterializedResult result = getDistributedQueryRunner().execute("SELECT * FROM " + tableName);
             assertThat(result.getRowCount()).isEqualTo(100);
         }
     }
@@ -88,19 +86,9 @@ public class TestIcebergParquetConnectorTest
     }
 
     @Test
-    @Override
-    public void testDropAmbiguousRowFieldCaseSensitivity()
-    {
-        // TODO https://github.com/trinodb/trino/issues/16273 The connector can't read row types having ambiguous field names in Parquet files. e.g. row(X int, x int)
-        assertThatThrownBy(super::testDropAmbiguousRowFieldCaseSensitivity)
-                .hasMessage("Invalid schema: multiple fields for name col.some_field: 2 and 3");
-    }
-
-    @Test
     public void testIgnoreParquetStatistics()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_ignore_parquet_statistics",
                 "WITH (sorted_by = ARRAY['custkey']) AS TABLE tpch.tiny.customer WITH NO DATA")) {
             assertUpdate(
@@ -132,8 +120,7 @@ public class TestIcebergParquetConnectorTest
     @Test
     public void testPushdownPredicateToParquetAfterColumnRename()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_pushdown_predicate_statistics",
                 "WITH (sorted_by = ARRAY['custkey']) AS TABLE tpch.tiny.customer WITH NO DATA")) {
             assertUpdate(

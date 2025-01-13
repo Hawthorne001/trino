@@ -22,17 +22,18 @@ import io.airlift.units.Duration;
 import io.trino.hive.thrift.metastore.ColumnStatisticsData;
 import io.trino.hive.thrift.metastore.ColumnStatisticsObj;
 import io.trino.hive.thrift.metastore.LongColumnStatsData;
-import io.trino.plugin.hive.HiveBasicStatistics;
+import io.trino.metastore.Database;
+import io.trino.metastore.HiveBasicStatistics;
+import io.trino.metastore.HiveColumnStatistics;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.Table;
+import io.trino.metastore.TableInfo;
+import io.trino.metastore.cache.CachingHiveMetastore;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.plugin.hive.HiveColumnHandle;
-import io.trino.plugin.hive.HiveMetastoreClosure;
-import io.trino.plugin.hive.PartitionStatistics;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.metastore.TableInfo;
 import io.trino.plugin.hive.metastore.thrift.BridgingHiveMetastore;
 import io.trino.plugin.hive.metastore.thrift.MockThriftMetastoreClient;
 import io.trino.plugin.hive.metastore.thrift.ThriftHiveMetastore;
@@ -69,15 +70,15 @@ import java.util.function.Consumer;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.metastore.HiveColumnStatistics.createIntegerColumnStatistics;
+import static io.trino.metastore.HiveType.HIVE_STRING;
+import static io.trino.metastore.StatisticsUpdateMode.MERGE_INCREMENTAL;
+import static io.trino.metastore.cache.CachingHiveMetastore.createPerTransactionCache;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static io.trino.plugin.hive.HiveColumnHandle.createBaseColumn;
-import static io.trino.plugin.hive.HiveType.HIVE_STRING;
 import static io.trino.plugin.hive.TestingThriftHiveMetastoreBuilder.testingThriftHiveMetastoreBuilder;
-import static io.trino.plugin.hive.metastore.HiveColumnStatistics.createIntegerColumnStatistics;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.computePartitionKeyFilter;
 import static io.trino.plugin.hive.metastore.MetastoreUtil.makePartitionName;
-import static io.trino.plugin.hive.metastore.StatisticsUpdateMode.MERGE_INCREMENTAL;
-import static io.trino.plugin.hive.metastore.cache.CachingHiveMetastore.createPerTransactionCache;
 import static io.trino.plugin.hive.metastore.thrift.MockThriftMetastoreClient.BAD_DATABASE;
 import static io.trino.plugin.hive.metastore.thrift.MockThriftMetastoreClient.BAD_PARTITION;
 import static io.trino.plugin.hive.metastore.thrift.MockThriftMetastoreClient.PARTITION_COLUMN_NAMES;
@@ -95,7 +96,6 @@ import static io.trino.plugin.hive.metastore.thrift.MockThriftMetastoreClient.TE
 import static io.trino.spi.predicate.TupleDomain.withColumnDomains;
 import static io.trino.spi.security.PrincipalType.USER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
-import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.String.format;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -118,6 +118,7 @@ public class TestCachingHiveMetastore
     private static final TableInfo TEST_TABLE_INFO = new TableInfo(TEST_SCHEMA_TABLE, TableInfo.ExtendedRelationType.TABLE);
     private static final Duration CACHE_TTL = new Duration(5, TimeUnit.MINUTES);
 
+    private AutoCloseableCloser closer;
     private MockThriftMetastoreClient mockClient;
     private ThriftMetastore thriftHiveMetastore;
     private ListeningExecutorService executor;
@@ -128,6 +129,7 @@ public class TestCachingHiveMetastore
     @BeforeEach
     public void setUp()
     {
+        closer = AutoCloseableCloser.create();
         mockClient = new MockThriftMetastoreClient();
         thriftHiveMetastore = createThriftHiveMetastore();
         executor = listeningDecorator(newCachedThreadPool(daemonThreadsNamed(getClass().getSimpleName() + "-%s")));
@@ -140,10 +142,13 @@ public class TestCachingHiveMetastore
 
     @AfterAll
     public void tearDown()
+            throws Exception
     {
         executor.shutdownNow();
         executor = null;
         metastore = null;
+        closer.close();
+        closer = null;
     }
 
     private ThriftMetastore createThriftHiveMetastore()
@@ -151,11 +156,11 @@ public class TestCachingHiveMetastore
         return createThriftHiveMetastore(mockClient);
     }
 
-    private static ThriftMetastore createThriftHiveMetastore(ThriftMetastoreClient client)
+    private ThriftMetastore createThriftHiveMetastore(ThriftMetastoreClient client)
     {
         return testingThriftHiveMetastoreBuilder()
                 .metastoreClient(client)
-                .build();
+                .build(closer::register);
     }
 
     @Test
@@ -233,7 +238,7 @@ public class TestCachingHiveMetastore
     @Test
     public void testInvalidDbGetAllTAbles()
     {
-        assertThat(metastore.getTables(BAD_DATABASE).isEmpty()).isTrue();
+        assertThat(metastore.getTables(BAD_DATABASE)).isEmpty();
     }
 
     @Test
@@ -274,7 +279,7 @@ public class TestCachingHiveMetastore
     @Test
     public void testInvalidDbGetTable()
     {
-        assertThat(metastore.getTable(BAD_DATABASE, TEST_TABLE).isPresent()).isFalse();
+        assertThat(metastore.getTable(BAD_DATABASE, TEST_TABLE)).isEmpty();
 
         assertThat(stats.getGetTable().getThriftExceptions().getTotalCount()).isEqualTo(0);
         assertThat(stats.getGetTable().getTotalFailures().getTotalCount()).isEqualTo(0);
@@ -365,7 +370,7 @@ public class TestCachingHiveMetastore
     @Test
     public void testInvalidGetPartitionNamesByFilterAll()
     {
-        assertThat(metastore.getPartitionNamesByFilter(BAD_DATABASE, TEST_TABLE, PARTITION_COLUMN_NAMES, TupleDomain.all()).isEmpty()).isTrue();
+        assertThat(metastore.getPartitionNamesByFilter(BAD_DATABASE, TEST_TABLE, PARTITION_COLUMN_NAMES, TupleDomain.all())).isEmpty();
     }
 
     @Test
@@ -423,7 +428,7 @@ public class TestCachingHiveMetastore
     @Test
     public void testInvalidGetPartitionNamesByParts()
     {
-        assertThat(metastore.getPartitionNamesByFilter(BAD_DATABASE, TEST_TABLE, PARTITION_COLUMN_NAMES, TupleDomain.all()).isPresent()).isFalse();
+        assertThat(metastore.getPartitionNamesByFilter(BAD_DATABASE, TEST_TABLE, PARTITION_COLUMN_NAMES, TupleDomain.all())).isEmpty();
     }
 
     @Test
@@ -434,24 +439,24 @@ public class TestCachingHiveMetastore
         assertThat(mockClient.getAccessCount()).isEqualTo(1);
 
         // Select half of the available partitions and load them into the cache
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1)).size()).isEqualTo(1);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1))).hasSize(1);
         assertThat(mockClient.getAccessCount()).isEqualTo(2);
 
         // Now select all the partitions
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2)).size()).isEqualTo(2);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2))).hasSize(2);
         // There should be one more access to fetch the remaining partition
         assertThat(mockClient.getAccessCount()).isEqualTo(3);
 
         // Now if we fetch any or both of them, they should not hit the client
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1)).size()).isEqualTo(1);
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION2)).size()).isEqualTo(1);
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2)).size()).isEqualTo(2);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1))).hasSize(1);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION2))).hasSize(1);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2))).hasSize(2);
         assertThat(mockClient.getAccessCount()).isEqualTo(3);
 
         metastore.flushCache();
 
         // Fetching both should only result in one batched access
-        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2)).size()).isEqualTo(2);
+        assertThat(metastore.getPartitionsByNames(table, ImmutableList.of(TEST_PARTITION1, TEST_PARTITION2))).hasSize(2);
         assertThat(mockClient.getAccessCount()).isEqualTo(4);
     }
 
@@ -894,12 +899,10 @@ public class TestCachingHiveMetastore
     {
         assertThat(mockClient.getAccessCount()).isEqualTo(0);
 
-        HiveMetastoreClosure hiveMetastoreClosure = new HiveMetastoreClosure(metastore, TESTING_TYPE_MANAGER, false);
-
-        Table table = hiveMetastoreClosure.getTable(TEST_DATABASE, TEST_TABLE).orElseThrow();
+        Table table = metastore.getTable(TEST_DATABASE, TEST_TABLE).orElseThrow();
         assertThat(mockClient.getAccessCount()).isEqualTo(1);
 
-        hiveMetastoreClosure.updatePartitionStatistics(table.getDatabaseName(), table.getTableName(), MERGE_INCREMENTAL, Map.of(TEST_PARTITION1, TEST_STATS));
+        metastore.updatePartitionStatistics(table, MERGE_INCREMENTAL, Map.of(TEST_PARTITION1, TEST_STATS));
         assertThat(mockClient.getAccessCount()).isEqualTo(5);
     }
 
@@ -908,9 +911,9 @@ public class TestCachingHiveMetastore
     {
         Table table = metastore.getTable(TEST_DATABASE, TEST_TABLE).orElseThrow();
         Map<String, Optional<Partition>> partitionsByNames = metastore.getPartitionsByNames(table, ImmutableList.of(BAD_PARTITION));
-        assertThat(partitionsByNames.size()).isEqualTo(1);
+        assertThat(partitionsByNames).hasSize(1);
         Optional<Partition> onlyElement = Iterables.getOnlyElement(partitionsByNames.values());
-        assertThat(onlyElement.isPresent()).isFalse();
+        assertThat(onlyElement).isEmpty();
     }
 
     @Test
@@ -921,7 +924,7 @@ public class TestCachingHiveMetastore
         try {
             metastore.getAllDatabases();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
         }
         assertThat(mockClient.getAccessCount()).isEqualTo(1);
 
@@ -929,7 +932,7 @@ public class TestCachingHiveMetastore
         try {
             metastore.getAllDatabases();
         }
-        catch (RuntimeException ignored) {
+        catch (RuntimeException _) {
         }
         assertThat(mockClient.getAccessCount()).isEqualTo(2);
     }
@@ -1050,7 +1053,7 @@ public class TestCachingHiveMetastore
         return new PartitionCachingAssertions(executor);
     }
 
-    static class PartitionCachingAssertions
+    class PartitionCachingAssertions
     {
         private final CachingHiveMetastore cachingHiveMetastore;
         private final MockThriftMetastoreClient thriftClient;
@@ -1116,7 +1119,7 @@ public class TestCachingHiveMetastore
                 executor,
                 1000,
                 CachingHiveMetastore.StatsRecording.ENABLED,
-                cacheMissing,
-                partitionCacheEnabled);
+                partitionCacheEnabled,
+                cacheMissing ? ImmutableSet.copyOf(CachingHiveMetastore.ObjectType.values()) : ImmutableSet.of());
     }
 }

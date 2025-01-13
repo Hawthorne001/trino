@@ -31,6 +31,7 @@ import com.amazonaws.services.glue.model.GetDatabasesResult;
 import com.amazonaws.services.glue.model.GetTableRequest;
 import com.amazonaws.services.glue.model.GetTablesRequest;
 import com.amazonaws.services.glue.model.GetTablesResult;
+import com.amazonaws.services.glue.model.StorageDescriptor;
 import com.amazonaws.services.glue.model.TableInput;
 import com.amazonaws.services.glue.model.UpdateTableRequest;
 import com.google.common.cache.Cache;
@@ -45,11 +46,11 @@ import io.trino.cache.EvictableCacheBuilder;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.hive.SchemaAlreadyExistsException;
+import io.trino.metastore.SchemaAlreadyExistsException;
+import io.trino.metastore.TableInfo;
 import io.trino.plugin.hive.TrinoViewUtil;
 import io.trino.plugin.hive.ViewAlreadyExistsException;
 import io.trino.plugin.hive.ViewReaderUtil;
-import io.trino.plugin.hive.metastore.TableInfo;
 import io.trino.plugin.hive.metastore.glue.GlueMetastoreStats;
 import io.trino.plugin.iceberg.IcebergMaterializedViewDefinition;
 import io.trino.plugin.iceberg.IcebergMetadata;
@@ -91,6 +92,7 @@ import org.apache.iceberg.io.FileIO;
 
 import java.io.IOException;
 import java.time.Duration;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -98,6 +100,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -114,20 +119,22 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Streams.stream;
 import static io.trino.cache.CacheUtils.uncheckedCacheGet;
 import static io.trino.filesystem.Locations.appendPath;
+import static io.trino.metastore.Table.TABLE_COMMENT;
+import static io.trino.plugin.base.util.ExecutorUtil.processWithAdditionalThreads;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_METASTORE_ERROR;
 import static io.trino.plugin.hive.HiveMetadata.STORAGE_TABLE;
-import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
 import static io.trino.plugin.hive.TableType.VIRTUAL_VIEW;
 import static io.trino.plugin.hive.TrinoViewUtil.createViewProperties;
 import static io.trino.plugin.hive.ViewReaderUtil.encodeViewData;
 import static io.trino.plugin.hive.ViewReaderUtil.isTrinoMaterializedView;
 import static io.trino.plugin.hive.ViewReaderUtil.isTrinoView;
-import static io.trino.plugin.hive.metastore.glue.AwsSdkUtil.getPaginatedResults;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getColumnParameters;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getTableParameters;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getTableType;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getTableTypeNullable;
+import static io.trino.plugin.hive.metastore.glue.v1.AwsSdkUtil.getPaginatedResults;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getColumnParameters;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getStorageDescriptor;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableParameters;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableType;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableTypeNullable;
 import static io.trino.plugin.hive.util.HiveUtil.isHiveSystemSchema;
 import static io.trino.plugin.hive.util.HiveUtil.isIcebergTable;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_BAD_DATA;
@@ -141,12 +148,12 @@ import static io.trino.plugin.iceberg.IcebergSchemaProperties.LOCATION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergTableName.tableNameWithType;
 import static io.trino.plugin.iceberg.IcebergUtil.COLUMN_TRINO_NOT_NULL_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergUtil.COLUMN_TRINO_TYPE_ID_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergUtil.TRINO_TABLE_COMMENT_CACHE_PREVENTED;
 import static io.trino.plugin.iceberg.IcebergUtil.TRINO_TABLE_METADATA_INFO_VALID_FOR;
 import static io.trino.plugin.iceberg.IcebergUtil.getColumnMetadatas;
 import static io.trino.plugin.iceberg.IcebergUtil.getIcebergTableWithMetadata;
 import static io.trino.plugin.iceberg.IcebergUtil.getTableComment;
 import static io.trino.plugin.iceberg.IcebergUtil.quotedTableName;
-import static io.trino.plugin.iceberg.IcebergUtil.validateTableCanBeDropped;
 import static io.trino.plugin.iceberg.TableType.MATERIALIZED_VIEW_STORAGE;
 import static io.trino.plugin.iceberg.TrinoMetricsReporter.TRINO_METRICS_REPORTER;
 import static io.trino.plugin.iceberg.catalog.glue.GlueIcebergUtil.getMaterializedViewTableInput;
@@ -173,7 +180,6 @@ public class TrinoGlueCatalog
     private static final int PER_QUERY_CACHES_SIZE = 1000;
 
     private final String trinoVersion;
-    private final TypeManager typeManager;
     private final boolean cacheTableMetadata;
     private final TrinoFileSystemFactory fileSystemFactory;
     private final Optional<String> defaultSchemaLocation;
@@ -181,6 +187,7 @@ public class TrinoGlueCatalog
     private final GlueMetastoreStats stats;
     private final boolean hideMaterializedViewStorageTable;
     private final boolean isUsingSystemSecurity;
+    private final Executor metadataFetchingExecutor;
 
     private final Cache<SchemaTableName, com.amazonaws.services.glue.model.Table> glueTableCache = EvictableCacheBuilder.newBuilder()
             // Even though this is query-scoped, this still needs to be bounded. information_schema queries can access large number of tables.
@@ -209,11 +216,11 @@ public class TrinoGlueCatalog
             boolean isUsingSystemSecurity,
             Optional<String> defaultSchemaLocation,
             boolean useUniqueTableLocation,
-            boolean hideMaterializedViewStorageTable)
+            boolean hideMaterializedViewStorageTable,
+            Executor metadataFetchingExecutor)
     {
         super(catalogName, typeManager, tableOperationsProvider, fileSystemFactory, useUniqueTableLocation);
         this.trinoVersion = requireNonNull(trinoVersion, "trinoVersion is null");
-        this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.cacheTableMetadata = cacheTableMetadata;
         this.fileSystemFactory = requireNonNull(fileSystemFactory, "fileSystemFactory is null");
         this.glueClient = requireNonNull(glueClient, "glueClient is null");
@@ -221,6 +228,7 @@ public class TrinoGlueCatalog
         this.isUsingSystemSecurity = isUsingSystemSecurity;
         this.defaultSchemaLocation = requireNonNull(defaultSchemaLocation, "defaultSchemaLocation is null");
         this.hideMaterializedViewStorageTable = hideMaterializedViewStorageTable;
+        this.metadataFetchingExecutor = requireNonNull(metadataFetchingExecutor, "metadataFetchingExecutor is null");
     }
 
     @Override
@@ -366,12 +374,43 @@ public class TrinoGlueCatalog
     @Override
     public List<TableInfo> listTables(ConnectorSession session, Optional<String> namespace)
     {
-        return listNamespaces(session, namespace).stream()
-                .flatMap(glueNamespace -> getGlueTablesWithExceptionHandling(glueNamespace)
-                        .map(table -> new TableInfo(
-                                new SchemaTableName(glueNamespace, table.getName()),
-                                TableInfo.ExtendedRelationType.fromTableTypeAndComment(getTableType(table), getTableParameters(table).get(TABLE_COMMENT)))))
+        return listTables(session, namespace, _ -> true);
+    }
+
+    @Override
+    public List<SchemaTableName> listIcebergTables(ConnectorSession session, Optional<String> namespace)
+    {
+        return listTables(session, namespace, table -> isIcebergTable(getTableParameters(table))).stream()
+                .map(TableInfo::tableName)
                 .collect(toImmutableList());
+    }
+
+    private List<TableInfo> listTables(
+            ConnectorSession session,
+            Optional<String> namespace,
+            Predicate<com.amazonaws.services.glue.model.Table> tablePredicate)
+    {
+        List<Callable<List<TableInfo>>> tasks = listNamespaces(session, namespace).stream()
+                .map(glueNamespace -> (Callable<List<TableInfo>>) () -> getGlueTablesWithExceptionHandling(glueNamespace)
+                        .filter(tablePredicate)
+                        .map(table -> mapToTableInfo(glueNamespace, table))
+                        .collect(toImmutableList()))
+                .collect(toImmutableList());
+        try {
+            return processWithAdditionalThreads(tasks, metadataFetchingExecutor).stream()
+                    .flatMap(Collection::stream)
+                    .collect(toImmutableList());
+        }
+        catch (ExecutionException e) {
+            throw new RuntimeException(e.getCause());
+        }
+    }
+
+    private TableInfo mapToTableInfo(String glueNamespace, com.amazonaws.services.glue.model.Table table)
+    {
+        return new TableInfo(
+                new SchemaTableName(glueNamespace, table.getName()),
+                TableInfo.ExtendedRelationType.fromTableTypeAndComment(getTableType(table), getTableParameters(table).get(TABLE_COMMENT)));
     }
 
     @Override
@@ -395,7 +434,7 @@ public class TrinoGlueCatalog
                     Map<String, String> tableParameters = getTableParameters(table);
                     if (isTrinoMaterializedView(tableType, tableParameters)) {
                         IcebergMaterializedViewDefinition definition = decodeMaterializedViewData(table.getViewOriginalText());
-                        unfilteredResult.add(RelationColumnsMetadata.forMaterializedView(name, toSpiMaterializedViewColumns(definition.getColumns())));
+                        unfilteredResult.add(RelationColumnsMetadata.forMaterializedView(name, toSpiMaterializedViewColumns(definition.columns())));
                     }
                     else if (isTrinoView(tableType, tableParameters)) {
                         ConnectorViewDefinition definition = ViewReaderUtil.PrestoViewReader.decodeViewData(table.getViewOriginalText());
@@ -486,7 +525,7 @@ public class TrinoGlueCatalog
                     String tableType = getTableType(table);
                     Map<String, String> tableParameters = getTableParameters(table);
                     if (isTrinoMaterializedView(tableType, tableParameters)) {
-                        Optional<String> comment = decodeMaterializedViewData(table.getViewOriginalText()).getComment();
+                        Optional<String> comment = decodeMaterializedViewData(table.getViewOriginalText()).comment();
                         unfilteredResult.add(RelationCommentMetadata.forRelation(name, comment));
                     }
                     else if (isTrinoView(tableType, tableParameters)) {
@@ -503,7 +542,8 @@ public class TrinoGlueCatalog
                     else {
                         String metadataLocation = tableParameters.get(METADATA_LOCATION_PROP);
                         String metadataValidForMetadata = tableParameters.get(TRINO_TABLE_METADATA_INFO_VALID_FOR);
-                        if (metadataValidForMetadata != null && metadataValidForMetadata.equals(metadataLocation)) {
+                        boolean tableCommentWasCached = tableParameters.getOrDefault(TRINO_TABLE_COMMENT_CACHE_PREVENTED, "false").equals("false");
+                        if (metadataValidForMetadata != null && metadataValidForMetadata.equals(metadataLocation) && tableCommentWasCached) {
                             Optional<String> comment = Optional.ofNullable(tableParameters.get(TABLE_COMMENT));
                             unfilteredResult.add(RelationCommentMetadata.forRelation(name, comment));
                         }
@@ -639,13 +679,14 @@ public class TrinoGlueCatalog
         Map<String, String> tableParameters = getTableParameters(glueTable);
         String metadataLocation = tableParameters.get(METADATA_LOCATION_PROP);
         String metadataValidForMetadata = tableParameters.get(TRINO_TABLE_METADATA_INFO_VALID_FOR);
+        Optional<StorageDescriptor> storageDescriptor = getStorageDescriptor(glueTable);
         if (metadataLocation == null || !metadataLocation.equals(metadataValidForMetadata) ||
-                glueTable.getStorageDescriptor() == null ||
-                glueTable.getStorageDescriptor().getColumns() == null) {
+                storageDescriptor.isEmpty() ||
+                storageDescriptor.get().getColumns() == null) {
             return Optional.empty();
         }
 
-        List<Column> glueColumns = glueTable.getStorageDescriptor().getColumns();
+        List<Column> glueColumns = storageDescriptor.get().getColumns();
         if (glueColumns.stream().noneMatch(column -> getColumnParameters(column).containsKey(COLUMN_TRINO_TYPE_ID_PROPERTY))) {
             // No column has type parameter, maybe the parameters were erased
             return Optional.empty();
@@ -671,7 +712,6 @@ public class TrinoGlueCatalog
     public void dropTable(ConnectorSession session, SchemaTableName schemaTableName)
     {
         BaseTable table = (BaseTable) loadTable(session, schemaTableName);
-        validateTableCanBeDropped(table);
         try {
             deleteTable(schemaTableName.getSchemaName(), schemaTableName.getTableName());
         }
@@ -754,6 +794,7 @@ public class TrinoGlueCatalog
                 schemaTableName.getTableName(),
                 Optional.of(session.getUser()),
                 tableMetadata,
+                tableMetadata.location(),
                 tableMetadata.metadataFileLocation(),
                 ImmutableMap.of(),
                 cacheTableMetadata);
@@ -803,6 +844,7 @@ public class TrinoGlueCatalog
                     to.getTableName(),
                     Optional.ofNullable(table.getOwner()),
                     metadata,
+                    getStorageDescriptor(table).map(StorageDescriptor::getLocation).orElse(null),
                     metadataLocation,
                     tableParameters,
                     cacheTableMetadata);
@@ -941,7 +983,8 @@ public class TrinoGlueCatalog
         Failsafe.with(RetryPolicy.builder()
                         .withMaxRetries(3)
                         .withDelay(Duration.ofMillis(100))
-                        .abortIf(throwable -> !replace || throwable instanceof ViewAlreadyExistsException)
+                        .handleIf(throwable -> replace && !(throwable instanceof ViewAlreadyExistsException))
+                        .abortOn(TrinoFileSystem::isUnrecoverableException)
                         .build())
                 .run(() -> doCreateView(session, schemaViewName, viewTableInput, replace));
     }
@@ -1313,22 +1356,20 @@ public class TrinoGlueCatalog
                     materializedViewParameters));
         }
 
+        SchemaTableName storageTableName;
         if (storageTable != null) {
             String storageSchema = Optional.ofNullable(materializedViewParameters.get(STORAGE_SCHEMA))
                     .orElse(viewName.getSchemaName());
-            SchemaTableName storageTableName = new SchemaTableName(storageSchema, storageTable);
+            storageTableName = new SchemaTableName(storageSchema, storageTable);
 
-            String viewOriginalText = table.getViewOriginalText();
-            if (viewOriginalText == null) {
+            if (table.getViewOriginalText() == null) {
                 throw new TrinoException(ICEBERG_BAD_DATA, "Materialized view did not have original text " + viewName);
             }
-            return getMaterializedViewDefinition(
-                    Optional.ofNullable(table.getOwner()),
-                    viewOriginalText,
-                    storageTableName);
+        }
+        else {
+            storageTableName = new SchemaTableName(viewName.getSchemaName(), tableNameWithType(viewName.getTableName(), MATERIALIZED_VIEW_STORAGE));
         }
 
-        SchemaTableName storageTableName = new SchemaTableName(viewName.getSchemaName(), tableNameWithType(viewName.getTableName(), MATERIALIZED_VIEW_STORAGE));
         return getMaterializedViewDefinition(
                 Optional.ofNullable(table.getOwner()),
                 table.getViewOriginalText(),
@@ -1372,9 +1413,12 @@ public class TrinoGlueCatalog
             operations.initializeFromMetadata(metadata);
             return Optional.of(new BaseTable(operations, quotedTableName(storageTableName), TRINO_METRICS_REPORTER));
         }
-        catch (NotFoundException e) {
+        catch (UncheckedExecutionException e) {
             // Removed during reading
-            return Optional.empty();
+            if (e.getCause() instanceof NotFoundException) {
+                return Optional.empty();
+            }
+            throw e;
         }
     }
 
@@ -1471,6 +1515,9 @@ public class TrinoGlueCatalog
                 }
                 catch (EntityNotFoundException e) {
                     throw new TableNotFoundException(tableName, e);
+                }
+                catch (AmazonServiceException e) {
+                    throw new TrinoException(ICEBERG_CATALOG_ERROR, e);
                 }
             });
         }

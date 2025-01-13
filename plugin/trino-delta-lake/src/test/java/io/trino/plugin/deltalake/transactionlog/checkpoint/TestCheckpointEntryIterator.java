@@ -24,6 +24,7 @@ import io.trino.filesystem.TrinoInputFile;
 import io.trino.filesystem.TrinoOutputFile;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
 import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
@@ -32,7 +33,6 @@ import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.plugin.deltalake.transactionlog.RemoveFileEntry;
 import io.trino.plugin.deltalake.transactionlog.statistics.DeltaLakeParquetFileStatistics;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -612,7 +612,8 @@ public class TestCheckpointEntryIterator
                         // partitionValues information is missing in the checkpoint
                         null,
                         1579190155406L,
-                        false));
+                        false,
+                        Optional.empty()));
 
         // CommitInfoEntry
         // not found in the checkpoint, TODO add a test
@@ -925,7 +926,8 @@ public class TestCheckpointEntryIterator
                                 UUID.randomUUID().toString(),
                                 ImmutableMap.of("part_key", "2023-01-01 00:00:00"),
                                 1000,
-                                true))
+                                true,
+                                Optional.empty()))
                 .collect(toImmutableSet());
 
         CheckpointEntries entries = new CheckpointEntries(

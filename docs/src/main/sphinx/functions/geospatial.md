@@ -61,7 +61,11 @@ Returns a geometry type object from WKT representation.
 :::
 
 :::{function} ST_GeomFromBinary(varbinary) -> Geometry
-Returns a geometry type object from WKB representation.
+Returns a geometry type object from WKB or EWKB representation.
+:::
+
+:::{function} ST_GeomFromKML(varchar) -> Geometry
+Returns a geometry type object from KML representation.
 :::
 
 :::{function} geometry_from_hadoop_shape(varbinary) -> Geometry
@@ -86,7 +90,7 @@ Array elements must not be `NULL` or empty.
 The returned geometry may not be simple and may contain duplicate points if input array has duplicates.
 :::
 
-:::{function} ST_Point(lat: double, lon: double) -> Point
+:::{function} ST_Point(lon: double, lat: double) -> Point
 Returns a geometry type point object with the given coordinate values.
 :::
 

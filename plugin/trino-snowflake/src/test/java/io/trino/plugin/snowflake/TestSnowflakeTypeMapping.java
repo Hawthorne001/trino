@@ -13,8 +13,6 @@
  */
 package io.trino.plugin.snowflake;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
 import io.trino.spi.type.TimeZoneKey;
@@ -40,8 +38,6 @@ import static com.google.common.base.Verify.verify;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
-import static io.trino.plugin.snowflake.SnowflakeQueryRunner.createSnowflakeQueryRunner;
-import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
@@ -79,10 +75,9 @@ public class TestSnowflakeTypeMapping
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        return createSnowflakeQueryRunner(
-                ImmutableMap.of(),
-                ImmutableMap.of("jdbc-types-mapped-to-varchar", "ARRAY"),
-                ImmutableList.of());
+        return SnowflakeQueryRunner.builder()
+                .addConnectorProperty("jdbc-types-mapped-to-varchar", "ARRAY")
+                .build();
     }
 
     @Test
@@ -113,10 +108,12 @@ public class TestSnowflakeTypeMapping
     private void testInteger(String inputType)
     {
         SqlDataTypeTest.create()
-                .addRoundTrip(inputType, "-9223372036854775808", BIGINT, "-9223372036854775808")
-                .addRoundTrip(inputType, "9223372036854775807", BIGINT, "9223372036854775807")
-                .addRoundTrip(inputType, "0", BIGINT, "CAST(0 AS BIGINT)")
-                .addRoundTrip(inputType, "NULL", BIGINT, "CAST(NULL AS BIGINT)")
+                .addRoundTrip(inputType, "'-9223372036854775808'", createDecimalType(38, 0), "CAST('-9223372036854775808' AS decimal(38, 0))")
+                .addRoundTrip(inputType, "'9223372036854775807'", createDecimalType(38, 0), "CAST('9223372036854775807' AS decimal(38, 0))")
+                .addRoundTrip(inputType, "'-99999999999999999999999999999999999999'", createDecimalType(38, 0), "CAST('-99999999999999999999999999999999999999' AS decimal(38, 0))")
+                .addRoundTrip(inputType, "'99999999999999999999999999999999999999'", createDecimalType(38, 0), "CAST('99999999999999999999999999999999999999' AS decimal(38, 0))")
+                .addRoundTrip(inputType, "0", createDecimalType(38, 0), "CAST(0 AS decimal(38, 0))")
+                .addRoundTrip(inputType, "NULL", createDecimalType(38, 0), "CAST(NULL AS decimal(38, 0))")
                 .execute(getQueryRunner(), snowflakeCreateAndInsert("tpch.integer"));
     }
 
@@ -124,10 +121,10 @@ public class TestSnowflakeTypeMapping
     public void testDecimal()
     {
         SqlDataTypeTest.create()
-                .addRoundTrip("decimal(3, 0)", "NULL", BIGINT, "CAST(NULL AS BIGINT)")
-                .addRoundTrip("decimal(3, 0)", "CAST('193' AS decimal(3, 0))", BIGINT, "CAST('193' AS BIGINT)")
-                .addRoundTrip("decimal(3, 0)", "CAST('19' AS decimal(3, 0))", BIGINT, "CAST('19' AS BIGINT)")
-                .addRoundTrip("decimal(3, 0)", "CAST('-193' AS decimal(3, 0))", BIGINT, "CAST('-193' AS BIGINT)")
+                .addRoundTrip("decimal(3, 0)", "NULL", createDecimalType(3, 0), "CAST(NULL AS decimal(3, 0))")
+                .addRoundTrip("decimal(3, 0)", "CAST('193' AS decimal(3, 0))", createDecimalType(3, 0), "CAST('193' AS decimal(3, 0))")
+                .addRoundTrip("decimal(3, 0)", "CAST('19' AS decimal(3, 0))", createDecimalType(3, 0), "CAST('19' AS decimal(3, 0))")
+                .addRoundTrip("decimal(3, 0)", "CAST('-193' AS decimal(3, 0))", createDecimalType(3, 0), "CAST('-193' AS decimal(3, 0))")
                 .addRoundTrip("decimal(3, 1)", "CAST('10.0' AS decimal(3, 1))", createDecimalType(3, 1), "CAST('10.0' AS decimal(3, 1))")
                 .addRoundTrip("decimal(3, 1)", "CAST('10.1' AS decimal(3, 1))", createDecimalType(3, 1), "CAST('10.1' AS decimal(3, 1))")
                 .addRoundTrip("decimal(3, 1)", "CAST('-10.1' AS decimal(3, 1))", createDecimalType(3, 1), "CAST('-10.1' AS decimal(3, 1))")
@@ -139,7 +136,8 @@ public class TestSnowflakeTypeMapping
                 .addRoundTrip("decimal(24, 4)", "CAST('12345678901234567890.31' AS decimal(24, 4))", createDecimalType(24, 4), "CAST('12345678901234567890.31' AS decimal(24, 4))")
                 .addRoundTrip("decimal(30, 5)", "CAST('3141592653589793238462643.38327' AS decimal(30, 5))", createDecimalType(30, 5), "CAST('3141592653589793238462643.38327' AS decimal(30, 5))")
                 .addRoundTrip("decimal(30, 5)", "CAST('-3141592653589793238462643.38327' AS decimal(30, 5))", createDecimalType(30, 5), "CAST('-3141592653589793238462643.38327' AS decimal(30, 5))")
-                .addRoundTrip("decimal(38, 0)", "CAST(NULL AS decimal(38, 0))", BIGINT, "CAST(NULL AS BIGINT)")
+                .addRoundTrip("decimal(38, 0)", "CAST(NULL AS decimal(38, 0))", createDecimalType(38, 0), "CAST(NULL AS decimal(38, 0))")
+                .addRoundTrip("decimal(38, 0)", "CAST('99999999999999999999999999999999999999' AS decimal(38, 0))", createDecimalType(38, 0), "CAST('99999999999999999999999999999999999999' AS decimal(38, 0))")
                 .execute(getQueryRunner(), snowflakeCreateAndInsert("tpch.test_decimal"))
                 .execute(getQueryRunner(), trinoCreateAsSelect("test_decimal"))
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_decimal"));
@@ -428,7 +426,8 @@ public class TestSnowflakeTypeMapping
                 "tpch.test_unsupported_data_type",
                 "AS SELECT TRUE x, TO_GEOMETRY('POINT(1820.12 890.56)') y")) {
             assertQuery(unsupportedTypeHandling(IGNORE), "SELECT * FROM " + table.getName(), "VALUES TRUE");
-            assertQuery(unsupportedTypeHandling(CONVERT_TO_VARCHAR), "SELECT * FROM " + table.getName(), """
+            assertQuery(unsupportedTypeHandling(CONVERT_TO_VARCHAR), "SELECT * FROM " + table.getName(),
+                    """
                     VALUES (TRUE, '{
                       "coordinates": [
                         1.820120000000000e+03,

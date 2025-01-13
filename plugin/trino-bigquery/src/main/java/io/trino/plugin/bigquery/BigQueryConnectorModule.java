@@ -17,6 +17,7 @@ import com.google.api.gax.rpc.FixedHeaderProvider;
 import com.google.api.gax.rpc.HeaderProvider;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.inject.Binder;
+import com.google.inject.Key;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
@@ -26,13 +27,16 @@ import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.trino.plugin.base.logging.FormatInterpolator;
 import io.trino.plugin.base.logging.SessionInterpolatedValues;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
+import io.trino.plugin.bigquery.procedure.ExecuteProcedure;
 import io.trino.plugin.bigquery.ptf.Query;
 import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.procedure.Procedure;
 
-import java.lang.annotation.Target;
 import java.lang.management.ManagementFactory;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -42,11 +46,9 @@ import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
+import static io.trino.plugin.base.ClosingBinder.closingBinder;
 import static io.trino.plugin.bigquery.BigQueryConfig.ARROW_SERIALIZATION_ENABLED;
-import static java.lang.annotation.ElementType.CONSTRUCTOR;
-import static java.lang.annotation.ElementType.FIELD;
-import static java.lang.annotation.ElementType.METHOD;
-import static java.lang.annotation.ElementType.PARAMETER;
+import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newFixedThreadPool;
 import static java.util.stream.Collectors.toSet;
 
@@ -87,6 +89,7 @@ public class BigQueryConnectorModule
                     BigQueryConfig::isArrowSerializationEnabled,
                     ClientModule::verifyPackageAccessAllowed));
             newSetBinder(binder, ConnectorTableFunction.class).addBinding().toProvider(Query.class).in(Scopes.SINGLETON);
+            newSetBinder(binder, Procedure.class).addBinding().toProvider(ExecuteProcedure.class).in(Scopes.SINGLETON);
             newSetBinder(binder, SessionPropertiesProvider.class).addBinding().to(BigQuerySessionProperties.class).in(Scopes.SINGLETON);
 
             Multibinder<BigQueryOptionsConfigurer> optionsConfigurers = newSetBinder(binder, BigQueryOptionsConfigurer.class);
@@ -105,6 +108,9 @@ public class BigQueryConnectorModule
                         newSetBinder(proxyBinder, BigQueryOptionsConfigurer.class).addBinding().to(ProxyOptionsConfigurer.class).in(Scopes.SINGLETON);
                         newOptionalBinder(binder, ProxyTransportFactory.class).setDefault().to(ProxyTransportFactory.DefaultProxyTransportFactory.class).in(Scopes.SINGLETON);
                     }));
+
+            closingBinder(binder).registerExecutor(ListeningExecutorService.class);
+            closingBinder(binder).registerExecutor(Key.get(ExecutorService.class, ForBigQueryPageSource.class));
         }
 
         @Provides
@@ -122,10 +128,18 @@ public class BigQueryConnectorModule
         }
 
         @Provides
-        @ForBigQuery
+        @Singleton
         public ListeningExecutorService provideListeningExecutor(BigQueryConfig config)
         {
             return listeningDecorator(newFixedThreadPool(config.getMetadataParallelism(), daemonThreadsNamed("big-query-%s"))); // limit parallelism
+        }
+
+        @Provides
+        @Singleton
+        @ForBigQueryPageSource
+        public ExecutorService provideExecutor(CatalogName catalogName)
+        {
+            return newCachedThreadPool(daemonThreadsNamed("bigquery-" + catalogName + "-%s"));
         }
 
         /**
@@ -185,10 +199,5 @@ public class BigQueryConnectorModule
                         .in(Scopes.SINGLETON);
             }
         }
-    }
-
-    @Target({PARAMETER, FIELD, METHOD, CONSTRUCTOR})
-    public @interface ForBigQuery
-    {
     }
 }

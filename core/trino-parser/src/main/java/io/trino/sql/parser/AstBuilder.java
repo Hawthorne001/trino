@@ -203,6 +203,7 @@ import io.trino.sql.tree.PlanSiblings;
 import io.trino.sql.tree.Prepare;
 import io.trino.sql.tree.PrincipalSpecification;
 import io.trino.sql.tree.ProcessingMode;
+import io.trino.sql.tree.PropertiesCharacteristic;
 import io.trino.sql.tree.Property;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.QuantifiedComparisonExpression;
@@ -603,7 +604,7 @@ class AstBuilder
         }
 
         return new CreateMaterializedView(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 getQualifiedName(context.qualifiedName()),
                 (Query) visit(context.rootQuery()),
                 context.REPLACE() != null,
@@ -617,7 +618,7 @@ class AstBuilder
     public Node visitRefreshMaterializedView(SqlBaseParser.RefreshMaterializedViewContext context)
     {
         return new RefreshMaterializedView(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 new Table(getQualifiedName(context.qualifiedName())));
     }
 
@@ -655,6 +656,7 @@ class AstBuilder
         }
 
         return new Insert(
+                getLocation(context),
                 new Table(getQualifiedName(context.qualifiedName())),
                 columnAliases,
                 (Query) visit(context.rootQuery()));
@@ -964,7 +966,7 @@ class AstBuilder
     @Override
     public Node visitStartTransaction(SqlBaseParser.StartTransactionContext context)
     {
-        return new StartTransaction(visit(context.transactionMode(), TransactionMode.class));
+        return new StartTransaction(getLocation(context), visit(context.transactionMode(), TransactionMode.class));
     }
 
     @Override
@@ -1164,7 +1166,7 @@ class AstBuilder
                 rowCount = new Parameter(getLocation(context.offset.QUESTION_MARK()), parameterPosition);
                 parameterPosition++;
             }
-            offset = Optional.of(new Offset(Optional.of(getLocation(context.OFFSET())), rowCount));
+            offset = Optional.of(new Offset(getLocation(context.OFFSET()), rowCount));
         }
 
         Optional<Node> limit = Optional.empty();
@@ -1179,7 +1181,7 @@ class AstBuilder
                     parameterPosition++;
                 }
             }
-            limit = Optional.of(new FetchFirst(Optional.of(getLocation(context.FETCH())), rowCount, context.TIES() != null));
+            limit = Optional.of(new FetchFirst(getLocation(context.FETCH()), rowCount, context.TIES() != null));
         }
         else if (context.LIMIT() != null) {
             if (context.limit == null) {
@@ -1197,7 +1199,7 @@ class AstBuilder
                 parameterPosition++;
             }
 
-            limit = Optional.of(new Limit(Optional.of(getLocation(context.LIMIT())), rowCount));
+            limit = Optional.of(new Limit(getLocation(context.LIMIT()), rowCount));
         }
 
         if (term instanceof QuerySpecification query) {
@@ -1397,7 +1399,7 @@ class AstBuilder
     @Override
     public Node visitExplainAnalyze(SqlBaseParser.ExplainAnalyzeContext context)
     {
-        return new ExplainAnalyze(getLocation(context), context.VERBOSE() != null, (Statement) visit(context.statement()));
+        return new ExplainAnalyze(getLocation(context), (Statement) visit(context.statement()), context.VERBOSE() != null);
     }
 
     @Override
@@ -1464,14 +1466,14 @@ class AstBuilder
     @Override
     public Node visitShowStats(SqlBaseParser.ShowStatsContext context)
     {
-        return new ShowStats(Optional.of(getLocation(context)), new Table(getQualifiedName(context.qualifiedName())));
+        return new ShowStats(getLocation(context), new Table(getQualifiedName(context.qualifiedName())));
     }
 
     @Override
     public Node visitShowStatsForQuery(SqlBaseParser.ShowStatsForQueryContext context)
     {
         Query query = (Query) visit(context.rootQuery());
-        return new ShowStats(Optional.of(getLocation(context)), new TableSubquery(query));
+        return new ShowStats(getLocation(context), new TableSubquery(query));
     }
 
     @Override
@@ -1560,7 +1562,8 @@ class AstBuilder
         return new DropRole(
                 getLocation(context),
                 (Identifier) visit(context.name),
-                visitIfPresent(context.catalog, Identifier.class));
+                visitIfPresent(context.catalog, Identifier.class),
+                context.EXISTS() != null);
     }
 
     @Override
@@ -2057,7 +2060,7 @@ class AstBuilder
 
         Optional<OrderBy> orderBy = Optional.empty();
         if (context.ORDER() != null) {
-            orderBy = Optional.of(new OrderBy(visit(context.sortItem(), SortItem.class)));
+            orderBy = Optional.of(new OrderBy(getLocation(context.ORDER()), visit(context.sortItem(), SortItem.class)));
         }
 
         Optional<EmptyTableTreatment> emptyTableTreatment = Optional.empty();
@@ -2362,8 +2365,8 @@ class AstBuilder
     public Node visitCurrentTime(SqlBaseParser.CurrentTimeContext context)
     {
         return parsePrecision(context.precision)
-                .map(precision -> new CurrentTime(getLocation(context), precision))
-                .orElseGet(() -> new CurrentTime(getLocation(context)));
+                .map(precision -> new CurrentTime(getLocation(context), Optional.of(precision)))
+                .orElseGet(() -> new CurrentTime(getLocation(context), Optional.empty()));
     }
 
     @Override
@@ -2378,8 +2381,8 @@ class AstBuilder
     public Node visitCurrentTimestamp(SqlBaseParser.CurrentTimestampContext context)
     {
         return parsePrecision(context.precision)
-                .map(precision -> new CurrentTimestamp(getLocation(context), precision))
-                .orElseGet(() -> new CurrentTimestamp(getLocation(context)));
+                .map(precision -> new CurrentTimestamp(getLocation(context), Optional.of(precision)))
+                .orElseGet(() -> new CurrentTimestamp(getLocation(context), Optional.empty()));
     }
 
     private static Optional<Integer> parsePrecision(Token precision)
@@ -2442,8 +2445,8 @@ class AstBuilder
     @Override
     public Node visitListagg(SqlBaseParser.ListaggContext context)
     {
-        Optional<Window> window = Optional.empty();
-        OrderBy orderBy = new OrderBy(visit(context.sortItem(), SortItem.class));
+        Optional<Window> window = visitIfPresent(context.over(), Window.class);
+        OrderBy orderBy = new OrderBy(getLocation(context.ORDER()), visit(context.sortItem(), SortItem.class));
         boolean distinct = isDistinct(context.setQuantifier());
 
         Expression expression = (Expression) visit(context.expression());
@@ -2536,7 +2539,7 @@ class AstBuilder
         }
 
         return new JsonExists(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 jsonPathInvocation,
                 errorBehavior);
     }
@@ -2583,7 +2586,7 @@ class AstBuilder
         }
 
         return new JsonValue(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 jsonPathInvocation,
                 returnedType,
                 emptyBehavior,
@@ -2661,7 +2664,7 @@ class AstBuilder
         }
 
         return new JsonQuery(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 jsonPathInvocation,
                 returnedType,
                 jsonOutputFormat,
@@ -2688,7 +2691,7 @@ class AstBuilder
         Optional<Identifier> pathName = visitIfPresent(context.pathName, Identifier.class);
         List<JsonPathParameter> pathParameters = visit(context.jsonArgument(), JsonPathParameter.class);
 
-        return new JsonPathInvocation(Optional.of(getLocation(context)), jsonInput, inputFormat, jsonPath, pathName, pathParameters);
+        return new JsonPathInvocation(getLocation(context), jsonInput, inputFormat, jsonPath, pathName, pathParameters);
     }
 
     private static JsonFormat getJsonFormat(SqlBaseParser.JsonRepresentationContext context)
@@ -2709,7 +2712,7 @@ class AstBuilder
     public Node visitJsonArgument(SqlBaseParser.JsonArgumentContext context)
     {
         return new JsonPathParameter(
-                Optional.of(getLocation(context)),
+                getLocation(context),
                 (Identifier) visit(context.identifier()),
                 (Expression) visit(context.jsonValueExpression().expression()),
                 Optional.ofNullable(context.jsonValueExpression().jsonRepresentation())
@@ -2731,7 +2734,7 @@ class AstBuilder
             jsonOutputFormat = Optional.of(getJsonFormat(context.jsonRepresentation()));
         }
 
-        return new JsonObject(Optional.of(getLocation(context)), members, nullOnNull, uniqueKeys, returnedType, jsonOutputFormat);
+        return new JsonObject(getLocation(context), members, nullOnNull, uniqueKeys, returnedType, jsonOutputFormat);
     }
 
     @Override
@@ -2759,7 +2762,7 @@ class AstBuilder
             jsonOutputFormat = Optional.of(getJsonFormat(context.jsonRepresentation()));
         }
 
-        return new JsonArray(Optional.of(getLocation(context)), elements, nullOnNull, returnedType, jsonOutputFormat);
+        return new JsonArray(getLocation(context), elements, nullOnNull, returnedType, jsonOutputFormat);
     }
 
     @Override
@@ -2856,7 +2859,7 @@ class AstBuilder
 
         Optional<OrderBy> orderBy = Optional.empty();
         if (context.ORDER() != null) {
-            orderBy = Optional.of(new OrderBy(visit(context.sortItem(), SortItem.class)));
+            orderBy = Optional.of(new OrderBy(getLocation(context.ORDER()), visit(context.sortItem(), SortItem.class)));
         }
 
         QualifiedName name = getQualifiedName(context.qualifiedName());
@@ -2981,7 +2984,7 @@ class AstBuilder
     public Node visitLambda(SqlBaseParser.LambdaContext context)
     {
         List<LambdaArgumentDeclaration> arguments = visit(context.identifier(), Identifier.class).stream()
-                .map(LambdaArgumentDeclaration::new)
+                .map(argument -> new LambdaArgumentDeclaration(argument.getLocation().orElseThrow(), argument))
                 .collect(toList());
 
         Expression body = (Expression) visit(context.expression());
@@ -3102,7 +3105,7 @@ class AstBuilder
                 .map(this::getQualifiedName)
                 .collect(toList());
 
-        return new GroupingOperation(Optional.of(getLocation(context)), arguments);
+        return new GroupingOperation(getLocation(context), arguments);
     }
 
     @Override
@@ -3327,25 +3330,25 @@ class AstBuilder
     @Override
     public Node visitPositionalArgument(SqlBaseParser.PositionalArgumentContext context)
     {
-        return new CallArgument(getLocation(context), (Expression) visit(context.expression()));
+        return new CallArgument(getLocation(context), Optional.empty(), (Expression) visit(context.expression()));
     }
 
     @Override
     public Node visitNamedArgument(SqlBaseParser.NamedArgumentContext context)
     {
-        return new CallArgument(getLocation(context), (Identifier) visit(context.identifier()), (Expression) visit(context.expression()));
+        return new CallArgument(getLocation(context), Optional.of((Identifier) visit(context.identifier())), (Expression) visit(context.expression()));
     }
 
     @Override
     public Node visitQualifiedArgument(SqlBaseParser.QualifiedArgumentContext context)
     {
-        return new PathElement(getLocation(context), (Identifier) visit(context.identifier(0)), (Identifier) visit(context.identifier(1)));
+        return new PathElement(getLocation(context), Optional.of((Identifier) visit(context.identifier(0))), (Identifier) visit(context.identifier(1)));
     }
 
     @Override
     public Node visitUnqualifiedArgument(SqlBaseParser.UnqualifiedArgumentContext context)
     {
-        return new PathElement(getLocation(context), (Identifier) visit(context.identifier()));
+        return new PathElement(getLocation(context), Optional.empty(), (Identifier) visit(context.identifier()));
     }
 
     @Override
@@ -3421,7 +3424,7 @@ class AstBuilder
             type = DateTimeDataType.Type.TIMESTAMP;
         }
         else {
-            throw new ParsingException("Unexpected datetime type: " + context.getText());
+            throw parseError("Unexpected datetime type: " + context.getText(), context);
         }
 
         return new DateTimeDataType(
@@ -3708,17 +3711,39 @@ class AstBuilder
     @Override
     public Node visitFunctionSpecification(SqlBaseParser.FunctionSpecificationContext context)
     {
-        ControlStatement statement = (ControlStatement) visit(context.controlStatement());
-        if (!(statement instanceof ReturnStatement || statement instanceof CompoundStatement)) {
-            throw parseError("Function body must start with RETURN or BEGIN", context.controlStatement());
-        }
+        Optional<ControlStatement> statement = visitIfPresent(context.controlStatement(), ControlStatement.class);
+        statement.ifPresent(body -> {
+            if (!(body instanceof ReturnStatement || body instanceof CompoundStatement)) {
+                throw parseError("Function body must start with RETURN or BEGIN", context.controlStatement());
+            }
+        });
+
         return new FunctionSpecification(
                 getLocation(context),
                 getQualifiedName(context.functionDeclaration().qualifiedName()),
                 visit(context.functionDeclaration().parameterDeclaration(), ParameterDeclaration.class),
                 (ReturnsClause) visit(context.returnsClause()),
                 visit(context.routineCharacteristic(), RoutineCharacteristic.class),
-                statement);
+                statement,
+                visitIfPresent(context.functionDefinition(), StringLiteral.class));
+    }
+
+    @Override
+    public Node visitFunctionDefinition(SqlBaseParser.FunctionDefinitionContext context)
+    {
+        String value = context.getText();
+        value = value.substring(2, value.length() - 2);
+        if (value.isEmpty() || ((value.charAt(0) != '\r') && (value.charAt(0) != '\n'))) {
+            throw parseError("Function definition must start with a newline after opening quotes", context);
+        }
+        // strip leading \r or \n or \r\n
+        if (value.charAt(0) == '\r') {
+            value = value.substring(1);
+        }
+        if (!value.isEmpty() && value.charAt(0) == '\n') {
+            value = value.substring(1);
+        }
+        return new StringLiteral(getLocation(context), value);
     }
 
     @Override
@@ -3772,6 +3797,14 @@ class AstBuilder
     public Node visitCommentCharacteristic(SqlBaseParser.CommentCharacteristicContext context)
     {
         return new CommentCharacteristic(getLocation(context), visitString(context.string()).getValue());
+    }
+
+    @Override
+    public Node visitPropertiesCharacteristic(SqlBaseParser.PropertiesCharacteristicContext context)
+    {
+        return new PropertiesCharacteristic(
+                getLocation(context),
+                 visit(context.properties().propertyAssignments().property(), Property.class));
     }
 
     @Override

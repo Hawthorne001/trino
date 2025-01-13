@@ -14,7 +14,6 @@
 package io.trino;
 
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
@@ -118,6 +117,8 @@ public class FeaturesConfig
 
     private boolean hideInaccessibleColumns;
     private boolean forceSpillingJoin;
+
+    private boolean columnarFilterEvaluationEnabled = true;
 
     private boolean faultTolerantExecutionExchangeEncryptionEnabled = true;
 
@@ -274,10 +275,11 @@ public class FeaturesConfig
     }
 
     @Config("spiller-spill-path")
-    public FeaturesConfig setSpillerSpillPaths(String spillPaths)
+    public FeaturesConfig setSpillerSpillPaths(List<String> spillPaths)
     {
-        List<String> spillPathsSplit = ImmutableList.copyOf(Splitter.on(",").trimResults().omitEmptyStrings().split(spillPaths));
-        this.spillerSpillPaths = spillPathsSplit.stream().map(Paths::get).collect(toImmutableList());
+        this.spillerSpillPaths = spillPaths.stream()
+                .map(Paths::get)
+                .collect(toImmutableList());
         return this;
     }
 
@@ -486,12 +488,26 @@ public class FeaturesConfig
         return this;
     }
 
+    public boolean isColumnarFilterEvaluationEnabled()
+    {
+        return columnarFilterEvaluationEnabled;
+    }
+
+    @Config("experimental.columnar-filter-evaluation.enabled")
+    @ConfigDescription("Enables columnar evaluation of filters")
+    public FeaturesConfig setColumnarFilterEvaluationEnabled(boolean columnarFilterEvaluationEnabled)
+    {
+        this.columnarFilterEvaluationEnabled = columnarFilterEvaluationEnabled;
+        return this;
+    }
+
     public boolean isFaultTolerantExecutionExchangeEncryptionEnabled()
     {
         return faultTolerantExecutionExchangeEncryptionEnabled;
     }
 
-    @Config("fault-tolerant-execution.exchange-encryption-enabled")
+    @Config("fault-tolerant-execution-exchange-encryption-enabled")
+    @LegacyConfig("fault-tolerant-execution.exchange-encryption-enabled")
     public FeaturesConfig setFaultTolerantExecutionExchangeEncryptionEnabled(boolean faultTolerantExecutionExchangeEncryptionEnabled)
     {
         this.faultTolerantExecutionExchangeEncryptionEnabled = faultTolerantExecutionExchangeEncryptionEnabled;

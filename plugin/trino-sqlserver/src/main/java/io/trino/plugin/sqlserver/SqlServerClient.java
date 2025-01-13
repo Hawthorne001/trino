@@ -39,6 +39,7 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcJoinCondition;
+import io.trino.plugin.jdbc.JdbcMetadata;
 import io.trino.plugin.jdbc.JdbcOutputTableHandle;
 import io.trino.plugin.jdbc.JdbcProcedureHandle;
 import io.trino.plugin.jdbc.JdbcProcedureHandle.ProcedureQuery;
@@ -74,6 +75,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.predicate.Domain;
@@ -379,7 +381,10 @@ public class SqlServerClient
             // 'table lock on bulk load' table option causes the bulk load processes on user-defined tables to obtain a bulk update lock
             // note: this is not a request to lock a table immediately
             String sql = format("EXEC sp_tableoption '%s', 'table lock on bulk load', '1'",
-                    quoted(table.getCatalogName(), table.getSchemaName(), table.getTemporaryTableName().orElseGet(table::getTableName)));
+                    quoted(
+                            table.getRemoteTableName().getCatalogName().orElse(null),
+                            table.getRemoteTableName().getSchemaName().orElse(null),
+                            table.getTemporaryTableName().orElseGet(() -> table.getRemoteTableName().getTableName())));
             execute(session, connection, sql);
         }
         catch (SQLException e) {
@@ -501,12 +506,9 @@ public class SqlServerClient
     }
 
     @Override
-    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, JdbcTableHandle tableHandle)
+    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
     {
-        if (tableHandle.isSynthetic()) {
-            return ImmutableMap.of();
-        }
-        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(tableHandle.asPlainTable().getRemoteTableName())), ImmutableList.of());
+        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(remoteTableName)), ImmutableList.of());
 
         try (PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
             ResultSetMetaData metadata = preparedStatement.getMetaData();
@@ -523,7 +525,7 @@ public class SqlServerClient
                 // Throw TableNotFoundException because users shouldn't see such tables if they don't have the permission.
                 // TableNotFoundException will be suppressed when listing information_schema.
                 // https://learn.microsoft.com/sql/relational-databases/errors-events/mssqlserver-208-database-engine-error
-                throw new TableNotFoundException(tableHandle.asPlainTable().getSchemaTableName());
+                throw new TableNotFoundException(schemaTableName);
             }
             throw new TrinoException(JDBC_ERROR, "Failed to get case sensitivity for columns. " + firstNonNull(e.getMessage(), e), e);
         }
@@ -782,7 +784,7 @@ public class SqlServerClient
 
             Map<String, String> columnNameToStatisticsName = getColumnNameToStatisticsName(table, statisticsDao, tableObjectId);
 
-            for (JdbcColumnHandle column : this.getColumns(session, table)) {
+            for (JdbcColumnHandle column : JdbcMetadata.getColumns(session, this, table)) {
                 String statisticName = columnNameToStatisticsName.get(column.getColumnName());
                 if (statisticName == null) {
                     // No statistic for column
@@ -1114,7 +1116,7 @@ public class SqlServerClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in SQL Server
             return false;
         }

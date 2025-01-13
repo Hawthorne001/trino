@@ -43,7 +43,6 @@ import java.util.Optional;
 
 import static io.trino.connector.MockConnectorEntities.TPCH_NATION_WITH_HIDDEN_COLUMN;
 import static io.trino.connector.MockConnectorEntities.TPCH_WITH_HIDDEN_COLUMN_DATA;
-import static io.trino.plugin.tpch.TpchConnectorFactory.TPCH_SPLITS_PER_NODE;
 import static io.trino.plugin.tpch.TpchMetadata.TINY_SCHEMA_NAME;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.testing.TestingAccessControlManager.TestingPrivilegeType.SELECT_COLUMN;
@@ -76,7 +75,7 @@ public class TestColumnMask
     {
         QueryRunner runner = new StandaloneQueryRunner(SESSION);
         runner.installPlugin(new TpchPlugin());
-        runner.createCatalog(LOCAL_CATALOG, "tpch", ImmutableMap.of(TPCH_SPLITS_PER_NODE, "1"));
+        runner.createCatalog(LOCAL_CATALOG, "tpch", ImmutableMap.of("tpch.splits-per-node", "1"));
 
         ConnectorViewDefinition view = new ConnectorViewDefinition(
                 "SELECT nationkey, name FROM local.tiny.nation",
@@ -92,12 +91,12 @@ public class TestColumnMask
 
         ConnectorViewDefinition viewWithNested = new ConnectorViewDefinition(
                 """
-                        SELECT * FROM (
-                            VALUES
-                                ROW(ROW(1,2), 0),
-                                ROW(ROW(3,4), 1)
-                        ) t(nested, id)
-                        """,
+                SELECT * FROM (
+                    VALUES
+                        ROW(ROW(1,2), 0),
+                        ROW(ROW(3,4), 1)
+                ) t(nested, id)
+                """,
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableList.of(
@@ -734,20 +733,23 @@ public class TestColumnMask
                         .build());
 
         assertThat(assertions.query("SHOW STATS FOR (SELECT * FROM orders)"))
-                .containsAll("""
+                .containsAll(
+                        """
                         VALUES
                          (VARCHAR 'orderkey', CAST(NULL AS double), 1e0, 0e1, NULL, '7', '7'),
                          (VARCHAR 'clerk', 15e3, 1e3, 0e1, NULL, CAST(NULL AS varchar), CAST(NULL AS varchar)),
                          (NULL, NULL, NULL, NULL, 15e3, NULL, NULL)
                         """);
         assertThat(assertions.query("SHOW STATS FOR (SELECT orderkey FROM orders)"))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                          (VARCHAR 'orderkey', CAST(NULL AS double), 1e0, 0e1, NULL, VARCHAR '7', VARCHAR '7'),
                          (NULL, NULL, NULL, NULL, 15e3, NULL, NULL)
                         """);
         assertThat(assertions.query("SHOW STATS FOR (SELECT clerk FROM orders)"))
-                .matches("""
+                .matches(
+                        """
                         VALUES
                          (VARCHAR 'clerk', 15e3, 1e3, 0e1, NULL, CAST(NULL AS varchar), CAST(NULL AS varchar)),
                          (NULL, NULL, NULL, NULL, 15e3, NULL, NULL)
@@ -801,7 +803,7 @@ public class TestColumnMask
                         .expression("clerk")
                         .build());
         assertThat(assertions.query("INSERT INTO orders SELECT * FROM orders"))
-                .failure().hasMessage("Insert into table with column masks is not supported");
+                .failure().hasMessage("line 1:1: Insert into table with column masks is not supported");
     }
 
     @Test
@@ -906,7 +908,7 @@ public class TestColumnMask
                 .skippingTypesCheck()
                 .matches("VALUES 'POLAND'");
         assertThat(assertions.query("INSERT INTO mock.tiny.nation_with_hidden_column SELECT * FROM mock.tiny.nation_with_hidden_column"))
-                .failure().hasMessage("Insert into table with column masks is not supported");
+                .failure().hasMessage("line 1:1: Insert into table with column masks is not supported");
         assertThat(assertions.query("DELETE FROM mock.tiny.nation_with_hidden_column"))
                 .failure().hasMessage("line 1:1: Delete from table with column mask");
         assertThat(assertions.query("UPDATE mock.tiny.nation_with_hidden_column SET name = 'X'"))

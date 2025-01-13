@@ -100,16 +100,16 @@ public class TestMongoConnectorTest
     {
         return switch (connectorBehavior) {
             case SUPPORTS_ADD_FIELD,
-                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
-                    SUPPORTS_CREATE_VIEW,
-                    SUPPORTS_DROP_FIELD,
-                    SUPPORTS_MERGE,
-                    SUPPORTS_NOT_NULL_CONSTRAINT,
-                    SUPPORTS_RENAME_FIELD,
-                    SUPPORTS_RENAME_SCHEMA,
-                    SUPPORTS_SET_FIELD_TYPE,
-                    SUPPORTS_TRUNCATE,
-                    SUPPORTS_UPDATE -> false;
+                 SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                 SUPPORTS_CREATE_VIEW,
+                 SUPPORTS_DROP_FIELD,
+                 SUPPORTS_MERGE,
+                 SUPPORTS_NOT_NULL_CONSTRAINT,
+                 SUPPORTS_RENAME_FIELD,
+                 SUPPORTS_RENAME_SCHEMA,
+                 SUPPORTS_SET_FIELD_TYPE,
+                 SUPPORTS_TRUNCATE,
+                 SUPPORTS_UPDATE -> false;
             default -> super.hasBehavior(connectorBehavior);
         };
     }
@@ -129,7 +129,8 @@ public class TestMongoConnectorTest
                 assertThatThrownBy(() -> testColumnName(columnName, requiresDelimiting(columnName)))
                         .isInstanceOf(RuntimeException.class)
                         .hasMessage("Column name must not contain '$' or '.' for INSERT: " + columnName);
-                abort("Insert would fail");
+                // TODO: Insert would fail. The exception should be TrinoException.
+                continue;
             }
 
             testColumnName(columnName, requiresDelimiting(columnName));
@@ -355,7 +356,7 @@ public class TestMongoConnectorTest
 
     private void testPredicatePushdown(String value)
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_predicate_pushdown", "AS SELECT %s col".formatted(value))) {
+        try (TestTable table = newTrinoTable("test_predicate_pushdown", "AS SELECT %s col".formatted(value))) {
             testPredicatePushdown(table.getName(), "col = " + value);
             testPredicatePushdown(table.getName(), "col != " + value);
             testPredicatePushdown(table.getName(), "col < " + value);
@@ -379,7 +380,7 @@ public class TestMongoConnectorTest
 
     private void testPredicatePushdownFloatingPoint(String value)
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_floating_point_pushdown", "AS SELECT %s col".formatted(value))) {
+        try (TestTable table = newTrinoTable("test_floating_point_pushdown", "AS SELECT %s col".formatted(value))) {
             assertThat(query("SELECT * FROM " + table.getName() + " WHERE col = " + value))
                     .isFullyPushedDown();
             assertThat(query("SELECT * FROM " + table.getName() + " WHERE col <= " + value))
@@ -401,8 +402,7 @@ public class TestMongoConnectorTest
     @Test
     public void testPredicatePushdownCharWithPaddedSpace()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_predicate_pushdown_char_with_padded_space",
                 "(k, v) AS VALUES" +
                         "   (-1, CAST(NULL AS char(3))), " +
@@ -435,8 +435,7 @@ public class TestMongoConnectorTest
     public void testPredicatePushdownMultipleNotEquals()
     {
         // Regression test for https://github.com/trinodb/trino/issues/19404
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_predicate_pushdown_with_multiple_not_equals",
                 "(id, value) AS VALUES (1, 10), (2, 20), (3, 30)")) {
             assertThat(query("SELECT * FROM " + table.getName() + " WHERE id != 1 AND value != 20"))
@@ -448,8 +447,7 @@ public class TestMongoConnectorTest
     @Test
     public void testHighPrecisionDecimalPredicate()
     {
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "test_high_precision_decimal_predicate",
                 "(col DECIMAL(34, 0))",
                 Arrays.asList("decimal '3141592653589793238462643383279502'", null))) {
@@ -692,9 +690,8 @@ public class TestMongoConnectorTest
                 .append("x", new DBRef("test_db", "test_collection", 1));
         client.getDatabase("test").getCollection(tableName).insertOne(document);
 
-        // TODO Fix MongoPageSource to throw TrinoException
         assertThat(query("SELECT * FROM test." + tableName))
-                .nonTrinoExceptionFailure().hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
+                .failure().hasMessageContaining("DBRef should have 3 fields : row(databaseName varchar, collectionName varchar)");
 
         assertUpdate("DROP TABLE test." + tableName);
     }
@@ -1347,15 +1344,14 @@ public class TestMongoConnectorTest
     private void testFiltersOnDereferenceColumnReadsLessData(String expectedValue, String expectedType)
     {
         if (!isPushdownSupportedType(getQueryRunner().getPlannerContext().getTypeManager().fromSqlType(expectedType))) {
-            abort("Type doesn't support filter pushdown");
+            return;
         }
 
         Session sessionWithoutPushdown = Session.builder(getSession())
                 .setCatalogSessionProperty(getSession().getCatalog().orElseThrow(), "projection_pushdown_enabled", "false")
                 .build();
 
-        try (TestTable table = new TestTable(
-                getQueryRunner()::execute,
+        try (TestTable table = newTrinoTable(
                 "filter_on_projection_columns",
                 format("(col_0 ROW(col_1 %1$s, col_2 ROW(col_3 %1$s, col_4 ROW(col_5 %1$s))))", expectedType))) {
             assertUpdate(format("INSERT INTO %s VALUES NULL", table.getName()), 1);

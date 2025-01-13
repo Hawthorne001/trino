@@ -19,18 +19,6 @@
     </violation>
 
     <violation>
-        <name>java/lang/String.toLowerCase:()Ljava/lang/String;</name>
-        <version>1.1</version>
-        <comment>Prefer String.toLowerCase(java.util.Locale)</comment>
-    </violation>
-
-    <violation>
-        <name>java/lang/String.toUpperCase:()Ljava/lang/String;</name>
-        <version>1.1</version>
-        <comment>Prefer String.toUpperCase(java.util.Locale)</comment>
-    </violation>
-
-    <violation>
         <name>java/lang/String.toString:()Ljava/lang/String;</name>
         <version>1.1</version>
         <comment>Call to toString() is redundant</comment>
@@ -41,6 +29,22 @@
         <name>java/io/File.toString:()Ljava/lang/String;</name>
         <version>1.1</version>
         <comment>Prefer File.getPath()</comment>
+    </violation>
+
+    <violation>
+        <name>java/lang/Thread$Builder.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
+    </violation>
+    <violation>
+        <name>java/lang/Thread$Builder$OfPlatform.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
+    </violation>
+    <violation>
+        <name>java/lang/Thread$Builder$OfVirtual.factory:()Ljava/util/concurrent/ThreadFactory;</name>
+        <version>1.1</version>
+        <comment>Use io.airlift.concurrent.Threads's thread factories, as the set thread context class loader</comment>
     </violation>
 
     <violation>
@@ -144,6 +148,12 @@
         <name>org/testng/Assert.assertThrows:(Ljava/lang/Class;Lorg/testng/Assert$ThrowingRunnable;)V</name>
         <version>1.8</version>
         <comment>Use AssertJ's assertThatThrownBy, see https://github.com/trinodb/trino/issues/5320 for rationale</comment>
+    </violation>
+
+    <violation>
+        <name>com/amazonaws/services/glue/model/Table.getStorageDescriptor:()Lcom/amazonaws/services/glue/model/StorageDescriptor;</name>
+        <version>1.1</version>
+        <comment>Storage descriptor is nullable in Glue model, which is too easy to forget about. Prefer GlueToTrinoConverter.getStorageDescriptor</comment>
     </violation>
 
     <violation>

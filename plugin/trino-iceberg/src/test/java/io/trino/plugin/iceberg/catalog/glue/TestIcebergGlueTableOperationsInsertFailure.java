@@ -18,7 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.execution.Failure;
-import io.trino.plugin.hive.metastore.Database;
+import io.trino.metastore.Database;
 import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
 import io.trino.plugin.iceberg.TestingIcebergPlugin;
 import io.trino.spi.security.PrincipalType;
@@ -89,9 +89,9 @@ public class TestIcebergGlueTableOperationsInsertFailure
         dataDirectory.toFile().deleteOnExit();
 
         queryRunner.installPlugin(new TestingIcebergPlugin(dataDirectory, Optional.of(new TestingIcebergGlueCatalogModule(awsGlueAsyncAdapterProvider))));
-        queryRunner.createCatalog(ICEBERG_CATALOG, "iceberg", ImmutableMap.of());
+        queryRunner.createCatalog(ICEBERG_CATALOG, "iceberg", ImmutableMap.of("fs.hadoop.enabled", "true"));
 
-        glueHiveMetastore = createTestingGlueHiveMetastore(dataDirectory);
+        glueHiveMetastore = createTestingGlueHiveMetastore(dataDirectory, this::closeAfterClass);
 
         Database database = Database.builder()
                 .setDatabaseName(schemaName)
@@ -111,6 +111,7 @@ public class TestIcebergGlueTableOperationsInsertFailure
             if (glueHiveMetastore != null) {
                 // Data is on the local disk and will be deleted by the deleteOnExit hook
                 glueHiveMetastore.dropDatabase(schemaName, false);
+                glueHiveMetastore.shutdown();
             }
         }
         catch (Exception e) {
@@ -130,7 +131,7 @@ public class TestIcebergGlueTableOperationsInsertFailure
                     assertThat(throwable.getCause()).isInstanceOf(Failure.class);
                     Failure failure = (Failure) throwable.getCause();
                     assertThat(failure.getMessage()).contains("Test-simulated Glue timeout exception");
-                    assertThat(failure.getFailureInfo().getType()).isEqualTo("org.apache.iceberg.exceptions.CommitStateUnknownException");
+                    assertThat(failure.getFailureInfo().getType()).isEqualTo("io.trino.spi.TrinoException");
                 });
         assertQuery("SELECT * FROM " + tableName, "VALUES 'Trino', 'rocks'");
     }

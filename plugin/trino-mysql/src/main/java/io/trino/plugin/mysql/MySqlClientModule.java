@@ -27,6 +27,7 @@ import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
 import io.trino.plugin.jdbc.JdbcJoinPushdownSupportModule;
+import io.trino.plugin.jdbc.JdbcMetadataConfig;
 import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.TimestampTimeZoneDomain;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
@@ -47,6 +48,7 @@ public class MySqlClientModule
     protected void setup(Binder binder)
     {
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(MySqlClient.class).in(Scopes.SINGLETON);
+        configBinder(binder).bindConfigDefaults(JdbcMetadataConfig.class, config -> config.setBulkListColumns(true));
         newOptionalBinder(binder, TimestampTimeZoneDomain.class).setBinding().toInstance(TimestampTimeZoneDomain.UTC_ONLY);
         configBinder(binder).bindConfig(MySqlJdbcConfig.class);
         configBinder(binder).bindConfig(MySqlConfig.class);
@@ -79,7 +81,7 @@ public class MySqlClientModule
 
         // connectionTimeZone = LOCAL means the JDBC driver uses the JVM zone as the session zone
         // forceConnectionTimeZoneToSession = true means that the server side connection zone is changed to match local JVM zone
-        // https://dev.mysql.com/doc/connector-j/8.1/en/connector-j-time-instants.html (Solution 2b)
+        // https://dev.mysql.com/doc/connector-j/en/connector-j-time-instants.html (Solution 2b)
         connectionProperties.setProperty("connectionTimeZone", "LOCAL");
         connectionProperties.setProperty("forceConnectionTimeZoneToSession", "true");
 

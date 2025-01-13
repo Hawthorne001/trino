@@ -46,6 +46,7 @@ import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -130,11 +131,13 @@ public final class LambdaBytecodeGenerator
         }
 
         RowExpressionCompiler innerExpressionCompiler = new RowExpressionCompiler(
+                classDefinition,
                 callSiteBinder,
                 cachedInstanceBinder,
                 variableReferenceCompiler(parameterMapBuilder.buildOrThrow()),
                 functionManager,
-                compiledLambdaMap);
+                compiledLambdaMap,
+                parameters.build());
 
         return defineLambdaMethod(
                 innerExpressionCompiler,
@@ -194,10 +197,12 @@ public final class LambdaBytecodeGenerator
         Variable wasNull = scope.getVariable("wasNull");
 
         // generate values to be captured
-        ImmutableList.Builder<BytecodeExpression> captureVariableBuilder = ImmutableList.builder();
+        ImmutableList.Builder<BytecodeExpression> captureVariableBuilder = ImmutableList.builderWithExpectedSize(captureExpressions.size());
+        List<Variable> captureTempVariables = new ArrayList<>(captureExpressions.size());
         for (RowExpression captureExpression : captureExpressions) {
             Class<?> valueType = Primitives.wrap(captureExpression.type().getJavaType());
-            Variable valueVariable = scope.createTempVariable(valueType);
+            Variable valueVariable = scope.getOrCreateTempVariable(valueType);
+            captureTempVariables.add(valueVariable);
             block.append(context.generate(captureExpression));
             block.append(boxPrimitiveIfNecessary(scope, valueType));
             block.putVariable(valueVariable);
@@ -227,6 +232,7 @@ public final class LambdaBytecodeGenerator
                         "apply",
                         type(lambdaInterface),
                         captureVariables));
+        captureTempVariables.forEach(scope::releaseTempVariableForReuse);
         return block;
     }
 
@@ -262,18 +268,30 @@ public final class LambdaBytecodeGenerator
         scope.declareVariable("session", body, method.getThis().getField(sessionField));
 
         RowExpressionCompiler rowExpressionCompiler = new RowExpressionCompiler(
+                lambdaProviderClassDefinition,
                 callSiteBinder,
                 cachedInstanceBinder,
                 variableReferenceCompiler(ImmutableMap.of()),
                 functionManager,
-                compiledLambdaMap);
+                compiledLambdaMap,
+                ImmutableList.of());
+
+        List<Parameter> parameters = new ArrayList<>();
+        parameters.add(arg("session", ConnectorSession.class));
+        for (int i = 0; i < lambdaExpression.arguments().size(); i++) {
+            Symbol argument = lambdaExpression.arguments().get(i);
+            Class<?> type = Primitives.wrap(argument.type().getJavaType());
+            parameters.add(arg("lambda_" + i + "_" + BytecodeUtils.sanitizeName(argument.name()), type));
+        }
 
         BytecodeGeneratorContext generatorContext = new BytecodeGeneratorContext(
                 rowExpressionCompiler,
                 scope,
                 callSiteBinder,
                 cachedInstanceBinder,
-                functionManager);
+                functionManager,
+                lambdaProviderClassDefinition,
+                parameters);
 
         body.append(
                 generateLambda(

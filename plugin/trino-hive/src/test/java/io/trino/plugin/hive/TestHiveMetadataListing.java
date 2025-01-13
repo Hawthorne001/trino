@@ -15,22 +15,25 @@ package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.trino.plugin.hive.acid.AcidTransaction;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Database;
-import io.trino.plugin.hive.metastore.HiveColumnStatistics;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.HivePrincipal;
-import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.PartitionWithStatistics;
-import io.trino.plugin.hive.metastore.PrincipalPrivileges;
-import io.trino.plugin.hive.metastore.SortingColumn;
-import io.trino.plugin.hive.metastore.StatisticsUpdateMode;
-import io.trino.plugin.hive.metastore.Storage;
-import io.trino.plugin.hive.metastore.StorageFormat;
-import io.trino.plugin.hive.metastore.Table;
-import io.trino.plugin.hive.metastore.TableInfo;
+import com.google.common.collect.ImmutableSet;
+import io.trino.metastore.Column;
+import io.trino.metastore.Database;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.HiveColumnStatistics;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HivePrincipal;
+import io.trino.metastore.HivePrivilegeInfo;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.Partition;
+import io.trino.metastore.PartitionStatistics;
+import io.trino.metastore.PartitionWithStatistics;
+import io.trino.metastore.PrincipalPrivileges;
+import io.trino.metastore.SortingColumn;
+import io.trino.metastore.StatisticsUpdateMode;
+import io.trino.metastore.Storage;
+import io.trino.metastore.StorageFormat;
+import io.trino.metastore.Table;
+import io.trino.metastore.TableInfo;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.function.LanguageFunction;
@@ -106,6 +109,45 @@ public class TestHiveMetadataListing
             Optional.of("SELECT 1"),
             OptionalLong.empty());
 
+    private static final Table CORRECT_TABLE = new Table(
+            DATABASE_NAME,
+            "correct_table",
+            Optional.of("owner"),
+            "MANAGED_TABLE",
+            TABLE_STORAGE,
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableMap.of("param", "value3"),
+            Optional.empty(),
+            Optional.empty(),
+            OptionalLong.empty());
+
+    private static final Table FAILING_SERDE_INFO_TABLE = new Table(
+            DATABASE_NAME,
+            "failing_serde_info_table",
+            Optional.of("owner"),
+            "MANAGED_TABLE",
+            TABLE_STORAGE,
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableMap.of("param", "value3"),
+            Optional.empty(),
+            Optional.empty(),
+            OptionalLong.empty());
+
+    private static final Table FAILING_GENERAL_TABLE = new Table(
+            DATABASE_NAME,
+            "failing_general_table",
+            Optional.of("owner"),
+            "MANAGED_TABLE",
+            TABLE_STORAGE,
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableList.of(TABLE_COLUMN),
+            ImmutableMap.of("param", "value3"),
+            Optional.empty(),
+            Optional.empty(),
+            OptionalLong.empty());
+
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
@@ -139,11 +181,46 @@ public class TestHiveMetadataListing
                 FAILING_STORAGE_DESCRIPTOR_VIEW.getSchemaTableName().getTableName());
         assertQueryReturnsEmptyResult(withSchemaAndFailingSDViewFilter);
 
+        // TODO This could be potentially improved to not return empty results https://github.com/trinodb/trino/issues/6551
         String withSchemaAndFailingGeneralViewFilter = format(
                 "SELECT table_name FROM information_schema.views WHERE table_schema = '%s' AND table_name = '%s'",
                 DATABASE_NAME,
                 FAILING_GENERAL_VIEW.getSchemaTableName().getTableName());
         assertQueryReturnsEmptyResult(withSchemaAndFailingGeneralViewFilter);
+    }
+
+    @Test
+    public void testTableListing()
+    {
+        String withSchemaFilter = format("SELECT table_name FROM information_schema.tables WHERE table_schema = '%s'", DATABASE_NAME);
+        assertQuery(withSchemaFilter,
+                """
+                VALUES ('correct_view'),
+                ('failing_general_view'),
+                ('failing_storage_descriptor_view'),
+                ('correct_table'),
+                ('failing_serde_info_table'),
+                ('failing_general_table')\
+                """);
+
+        String withSchemaAndCorrectTableFilter = format(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s'",
+                DATABASE_NAME,
+                CORRECT_TABLE.getSchemaTableName().getTableName());
+        assertThat(computeScalar(withSchemaAndCorrectTableFilter)).isEqualTo(CORRECT_TABLE.getSchemaTableName().getTableName());
+
+        String withSchemaAndFailingSDTableFilter = format(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s'",
+                DATABASE_NAME,
+                FAILING_SERDE_INFO_TABLE.getSchemaTableName().getTableName());
+        assertQueryReturnsEmptyResult(withSchemaAndFailingSDTableFilter);
+
+        // TODO This could be potentially improved to not return empty results https://github.com/trinodb/trino/issues/6551
+        String withSchemaAndFailingGeneralTableFilter = format(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = '%s' AND table_name = '%s'",
+                DATABASE_NAME,
+                FAILING_GENERAL_TABLE.getSchemaTableName().getTableName());
+        assertQueryReturnsEmptyResult(withSchemaAndFailingGeneralTableFilter);
     }
 
     private static class TestingHiveMetastore
@@ -162,7 +239,16 @@ public class TestHiveMetadataListing
                     .add(new TableInfo(CORRECT_VIEW.getSchemaTableName(), TableInfo.ExtendedRelationType.OTHER_VIEW))
                     .add(new TableInfo(FAILING_STORAGE_DESCRIPTOR_VIEW.getSchemaTableName(), TableInfo.ExtendedRelationType.OTHER_VIEW))
                     .add(new TableInfo(FAILING_GENERAL_VIEW.getSchemaTableName(), TableInfo.ExtendedRelationType.OTHER_VIEW))
+                    .add(new TableInfo(CORRECT_TABLE.getSchemaTableName(), TableInfo.ExtendedRelationType.TABLE))
+                    .add(new TableInfo(FAILING_SERDE_INFO_TABLE.getSchemaTableName(), TableInfo.ExtendedRelationType.TABLE))
+                    .add(new TableInfo(FAILING_GENERAL_TABLE.getSchemaTableName(), TableInfo.ExtendedRelationType.TABLE))
                     .build();
+        }
+
+        @Override
+        public List<String> getTableNamesWithParameters(String databaseName, String parameterKey, ImmutableSet<String> parameterValues)
+        {
+            throw new UnsupportedOperationException();
         }
 
         @Override
@@ -176,6 +262,12 @@ public class TestHiveMetadataListing
                 throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, "Table StorageDescriptor is null for failing_view");
             }
             if (schemaTableName.equals(FAILING_GENERAL_VIEW.getSchemaTableName())) {
+                throw new RuntimeException("General error");
+            }
+            if (schemaTableName.equals(FAILING_SERDE_INFO_TABLE.getSchemaTableName())) {
+                throw new TrinoException(HIVE_UNSUPPORTED_FORMAT, "Table SerdeInfo is null for table failing_table");
+            }
+            if (schemaTableName.equals(FAILING_GENERAL_TABLE.getSchemaTableName())) {
                 throw new RuntimeException("General error");
             }
             return Optional.empty();
@@ -200,7 +292,7 @@ public class TestHiveMetadataListing
         }
 
         @Override
-        public void updateTableStatistics(String databaseName, String tableName, AcidTransaction transaction, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate)
+        public void updateTableStatistics(String databaseName, String tableName, OptionalLong acidWriteId, StatisticsUpdateMode mode, PartitionStatistics statisticsUpdate)
         {
             throw new UnsupportedOperationException();
         }

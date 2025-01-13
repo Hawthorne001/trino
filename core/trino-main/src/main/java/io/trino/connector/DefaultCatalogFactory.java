@@ -15,6 +15,7 @@ package io.trino.connector;
 
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.inject.Inject;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.node.NodeInfo;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
@@ -24,6 +25,7 @@ import io.trino.connector.system.StaticSystemTablesProvider;
 import io.trino.connector.system.SystemConnector;
 import io.trino.connector.system.SystemTablesProvider;
 import io.trino.execution.scheduler.NodeSchedulerConfig;
+import io.trino.memory.LocalMemoryManager;
 import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.Metadata;
 import io.trino.security.AccessControl;
@@ -71,6 +73,8 @@ public class DefaultCatalogFactory
     private final int maxPrefetchedInformationSchemaPrefixes;
 
     private final ConcurrentMap<ConnectorName, ConnectorFactory> connectorFactories = new ConcurrentHashMap<>();
+    private final LocalMemoryManager localMemoryManager;
+    private final SecretsResolver secretsResolver;
 
     @Inject
     public DefaultCatalogFactory(
@@ -85,7 +89,9 @@ public class DefaultCatalogFactory
             TransactionManager transactionManager,
             TypeManager typeManager,
             NodeSchedulerConfig nodeSchedulerConfig,
-            OptimizerConfig optimizerConfig)
+            OptimizerConfig optimizerConfig,
+            LocalMemoryManager localMemoryManager,
+            SecretsResolver secretsResolver)
     {
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
@@ -99,6 +105,8 @@ public class DefaultCatalogFactory
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.schedulerIncludeCoordinator = nodeSchedulerConfig.isIncludeCoordinator();
         this.maxPrefetchedInformationSchemaPrefixes = optimizerConfig.getMaxPrefetchedInformationSchemaPrefixes();
+        this.localMemoryManager = requireNonNull(localMemoryManager, "localMemoryManager is null");
+        this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
     }
 
     @Override
@@ -121,7 +129,7 @@ public class DefaultCatalogFactory
                 catalogProperties.catalogHandle().getCatalogName().toString(),
                 catalogProperties.catalogHandle(),
                 connectorFactory,
-                catalogProperties.properties());
+                secretsResolver.getResolvedConfiguration(catalogProperties.properties()));
 
         return createCatalog(
                 catalogProperties.catalogHandle(),
@@ -178,6 +186,7 @@ public class DefaultCatalogFactory
                 catalogConnector,
                 informationSchemaConnector,
                 systemConnector,
+                localMemoryManager,
                 catalogProperties);
     }
 
@@ -198,7 +207,7 @@ public class DefaultCatalogFactory
                 pageSorter,
                 pageIndexerFactory);
 
-        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(connectorFactory.getClass().getClassLoader())) {
+        try (ThreadContextClassLoader _ = new ThreadContextClassLoader(connectorFactory.getClass().getClassLoader())) {
             return connectorFactory.create(catalogName, properties, context);
         }
     }

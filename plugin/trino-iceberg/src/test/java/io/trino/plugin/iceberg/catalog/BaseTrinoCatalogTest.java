@@ -16,13 +16,17 @@ package io.trino.plugin.iceberg.catalog;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
+import io.trino.metastore.TableInfo;
+import io.trino.metastore.TableInfo.ExtendedRelationType;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.plugin.hive.NodeVersion;
-import io.trino.plugin.hive.metastore.TableInfo;
 import io.trino.plugin.iceberg.CommitTaskData;
+import io.trino.plugin.iceberg.IcebergFileFormat;
 import io.trino.plugin.iceberg.IcebergMetadata;
 import io.trino.plugin.iceberg.TableStatisticsWriter;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorViewDefinition;
@@ -30,7 +34,6 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.PrincipalType;
 import io.trino.spi.security.TrinoPrincipal;
 import io.trino.spi.type.VarcharType;
-import io.trino.util.AutoCloseableCloser;
 import org.apache.iceberg.NullOrder;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
@@ -43,17 +46,25 @@ import org.junit.jupiter.api.Test;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
 import static io.airlift.json.JsonCodec.jsonCodec;
+import static io.trino.metastore.TableInfo.ExtendedRelationType.TABLE;
+import static io.trino.metastore.TableInfo.ExtendedRelationType.TRINO_MATERIALIZED_VIEW;
+import static io.trino.metastore.TableInfo.ExtendedRelationType.TRINO_VIEW;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_DATABASE_LOCATION_ERROR;
-import static io.trino.plugin.hive.metastore.TableInfo.ExtendedRelationType.TABLE;
-import static io.trino.plugin.hive.metastore.TableInfo.ExtendedRelationType.TRINO_VIEW;
 import static io.trino.plugin.iceberg.IcebergSchemaProperties.LOCATION_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.FILE_FORMAT_PROPERTY;
+import static io.trino.plugin.iceberg.IcebergTableProperties.FORMAT_VERSION_PROPERTY;
 import static io.trino.plugin.iceberg.IcebergUtil.quotedTableName;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.testing.TestingConnectorSession.SESSION;
 import static io.trino.testing.TestingNames.randomNameSuffix;
@@ -77,7 +88,7 @@ public abstract class BaseTrinoCatalogTest
         TrinoCatalog catalog = createTrinoCatalog(false);
         String namespace = "test_create_namespace_with_location_" + randomNameSuffix();
         Map<String, Object> namespaceProperties = new HashMap<>(defaultNamespaceProperties(namespace));
-        String namespaceLocation = (String) namespaceProperties.computeIfAbsent(LOCATION_PROPERTY, ignored -> "local:///a/path/");
+        String namespaceLocation = (String) namespaceProperties.computeIfAbsent(LOCATION_PROPERTY, _ -> "local:///a/path/");
         namespaceProperties = ImmutableMap.copyOf(namespaceProperties);
         catalog.createNamespace(SESSION, namespace, namespaceProperties, new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
         assertThat(catalog.listNamespaces(SESSION)).contains(namespace);
@@ -117,7 +128,12 @@ public abstract class BaseTrinoCatalogTest
                     (connectorIdentity, fileIoProperties) -> {
                         throw new UnsupportedOperationException();
                     },
-                    new TableStatisticsWriter(new NodeVersion("test-version")));
+                    new TableStatisticsWriter(new NodeVersion("test-version")),
+                    Optional.empty(),
+                    false,
+                    _ -> false,
+                    newDirectExecutorService(),
+                    directExecutor());
             assertThat(icebergMetadata.schemaExists(SESSION, namespace)).as("icebergMetadata.schemaExists(namespace)")
                     .isFalse();
             assertThat(icebergMetadata.schemaExists(SESSION, schema)).as("icebergMetadata.schemaExists(schema)")
@@ -157,7 +173,7 @@ public abstract class BaseTrinoCatalogTest
 
             Table icebergTable = catalog.loadTable(SESSION, schemaTableName);
             assertThat(icebergTable.name()).isEqualTo(quotedTableName(schemaTableName));
-            assertThat(icebergTable.schema().columns().size()).isEqualTo(1);
+            assertThat(icebergTable.schema().columns()).hasSize(1);
             assertThat(icebergTable.schema().columns().get(0).name()).isEqualTo("col1");
             assertThat(icebergTable.schema().columns().get(0).type()).isEqualTo(Types.LongType.get());
             assertThat(icebergTable.location()).isEqualTo(tableLocation);
@@ -217,7 +233,7 @@ public abstract class BaseTrinoCatalogTest
 
             Table icebergTable = catalog.loadTable(SESSION, schemaTableName);
             assertThat(icebergTable.name()).isEqualTo(quotedTableName(schemaTableName));
-            assertThat(icebergTable.schema().columns().size()).isEqualTo(4);
+            assertThat(icebergTable.schema().columns()).hasSize(4);
             assertThat(icebergTable.schema().columns().get(0).name()).isEqualTo("col1");
             assertThat(icebergTable.schema().columns().get(0).type()).isEqualTo(Types.LongType.get());
             assertThat(icebergTable.schema().columns().get(1).name()).isEqualTo("col2");
@@ -305,7 +321,7 @@ public abstract class BaseTrinoCatalogTest
         Map<String, Object> namespaceProperties = new HashMap<>(defaultNamespaceProperties(namespace));
         String namespaceLocation = (String) namespaceProperties.computeIfAbsent(
                 LOCATION_PROPERTY,
-                ignored -> "local:///iceberg_catalog_test_rename_table_" + UUID.randomUUID());
+                _ -> "local:///iceberg_catalog_test_rename_table_" + UUID.randomUUID());
 
         catalog.createNamespace(SESSION, namespace, namespaceProperties, new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
         try {
@@ -347,7 +363,7 @@ public abstract class BaseTrinoCatalogTest
                 Optional.empty(),
                 Optional.empty(),
                 ImmutableList.of(
-                        new ConnectorViewDefinition.ViewColumn("name", VarcharType.createVarcharType(25).getTypeId(), Optional.empty())),
+                        new ConnectorViewDefinition.ViewColumn("name", VarcharType.createUnboundedVarcharType().getTypeId(), Optional.empty())),
                 Optional.empty(),
                 Optional.of(SESSION.getUser()),
                 false,
@@ -357,17 +373,17 @@ public abstract class BaseTrinoCatalogTest
             catalog.createNamespace(SESSION, namespace, defaultNamespaceProperties(namespace), new TrinoPrincipal(PrincipalType.USER, SESSION.getUser()));
             catalog.createView(SESSION, schemaTableName, viewDefinition, false);
 
-            assertThat(catalog.listTables(SESSION, Optional.of(namespace)).stream()).contains(new TableInfo(schemaTableName, TRINO_VIEW));
+            assertThat(catalog.listTables(SESSION, Optional.of(namespace)).stream()).contains(new TableInfo(schemaTableName, getViewType()));
 
             Map<SchemaTableName, ConnectorViewDefinition> views = catalog.getViews(SESSION, Optional.of(schemaTableName.getSchemaName()));
-            assertThat(views.size()).isEqualTo(1);
+            assertThat(views).hasSize(1);
             assertViewDefinition(views.get(schemaTableName), viewDefinition);
             assertViewDefinition(catalog.getView(SESSION, schemaTableName).orElseThrow(), viewDefinition);
 
             catalog.renameView(SESSION, schemaTableName, renamedSchemaTableName);
             assertThat(catalog.listTables(SESSION, Optional.of(namespace)).stream().map(TableInfo::tableName).toList()).doesNotContain(schemaTableName);
             views = catalog.getViews(SESSION, Optional.of(schemaTableName.getSchemaName()));
-            assertThat(views.size()).isEqualTo(1);
+            assertThat(views).hasSize(1);
             assertViewDefinition(views.get(renamedSchemaTableName), viewDefinition);
             assertViewDefinition(catalog.getView(SESSION, renamedSchemaTableName).orElseThrow(), viewDefinition);
             assertThat(catalog.getView(SESSION, schemaTableName)).isEmpty();
@@ -384,6 +400,11 @@ public abstract class BaseTrinoCatalogTest
                 LOG.warn("Failed to clean up namespace: %s", namespace);
             }
         }
+    }
+
+    protected ExtendedRelationType getViewType()
+    {
+        return TRINO_VIEW;
     }
 
     @Test
@@ -425,16 +446,119 @@ public abstract class BaseTrinoCatalogTest
                     .commitTransaction();
             closer.register(() -> catalog.dropTable(SESSION, table2));
 
+            ImmutableList.Builder<TableInfo> allTables = ImmutableList.<TableInfo>builder()
+                    .add(new TableInfo(table1, TABLE))
+                    .add(new TableInfo(table2, TABLE));
+
+            ImmutableList.Builder<SchemaTableName> icebergTables = ImmutableList.<SchemaTableName>builder()
+                    .add(table1)
+                    .add(table2);
+            SchemaTableName view = new SchemaTableName(ns2, "view");
+            try {
+                catalog.createView(
+                        SESSION,
+                        view,
+                        new ConnectorViewDefinition(
+                                "SELECT name FROM local.tiny.nation",
+                                Optional.empty(),
+                                Optional.empty(),
+                                ImmutableList.of(
+                                        new ConnectorViewDefinition.ViewColumn("name", VarcharType.createUnboundedVarcharType().getTypeId(), Optional.empty())),
+                                Optional.empty(),
+                                Optional.of(SESSION.getUser()),
+                                false,
+                                ImmutableList.of()),
+                        false);
+                closer.register(() -> catalog.dropView(SESSION, view));
+                allTables.add(new TableInfo(view, getViewType()));
+            }
+            catch (TrinoException e) {
+                assertThat(e.getErrorCode()).isEqualTo(NOT_SUPPORTED.toErrorCode());
+            }
+
+            try {
+                SchemaTableName materializedView = new SchemaTableName(ns2, "mv");
+                createMaterializedView(
+                        SESSION,
+                        catalog,
+                        materializedView,
+                        someMaterializedView(),
+                        ImmutableMap.of(
+                                FILE_FORMAT_PROPERTY, IcebergFileFormat.PARQUET,
+                                FORMAT_VERSION_PROPERTY, 1),
+                        false,
+                        false);
+                closer.register(() -> catalog.dropMaterializedView(SESSION, materializedView));
+                allTables.add(new TableInfo(materializedView, TRINO_MATERIALIZED_VIEW));
+            }
+            catch (TrinoException e) {
+                assertThat(e.getErrorCode()).isEqualTo(NOT_SUPPORTED.toErrorCode());
+            }
+
+            createExternalIcebergTable(catalog, ns2, closer).ifPresent(table -> {
+                allTables.add(new TableInfo(table, TABLE));
+                icebergTables.add(table);
+            });
+            createExternalNonIcebergTable(catalog, ns2, closer).ifPresent(table -> {
+                allTables.add(new TableInfo(table, TABLE));
+            });
+
             // No namespace provided, all tables across all namespaces should be returned
-            assertThat(catalog.listTables(SESSION, Optional.empty())).containsAll(ImmutableList.of(new TableInfo(table1, TABLE), new TableInfo(table2, TABLE)));
+            assertThat(catalog.listTables(SESSION, Optional.empty())).containsAll(allTables.build());
+            assertThat(catalog.listIcebergTables(SESSION, Optional.empty())).containsAll(icebergTables.build());
             // Namespace is provided and exists
             assertThat(catalog.listTables(SESSION, Optional.of(ns1))).containsExactly(new TableInfo(table1, TABLE));
+            assertThat(catalog.listIcebergTables(SESSION, Optional.of(ns1))).containsExactly(table1);
             // Namespace is provided and does not exist
             assertThat(catalog.listTables(SESSION, Optional.of("non_existing"))).isEmpty();
+            assertThat(catalog.listIcebergTables(SESSION, Optional.of("non_existing"))).isEmpty();
         }
     }
 
-    private String arbitraryTableLocation(TrinoCatalog catalog, ConnectorSession session, SchemaTableName schemaTableName)
+    protected void createMaterializedView(
+            ConnectorSession session,
+            TrinoCatalog catalog,
+            SchemaTableName materializedView,
+            ConnectorMaterializedViewDefinition materializedViewDefinition,
+            Map<String, Object> properties,
+            boolean replace,
+            boolean ignoreExisting)
+    {
+        catalog.createMaterializedView(
+                session,
+                materializedView,
+                materializedViewDefinition,
+                properties,
+                replace,
+                ignoreExisting);
+    }
+
+    protected Optional<SchemaTableName> createExternalIcebergTable(TrinoCatalog catalog, String namespace, AutoCloseableCloser closer)
+            throws Exception
+    {
+        return Optional.empty();
+    }
+
+    protected Optional<SchemaTableName> createExternalNonIcebergTable(TrinoCatalog catalog, String namespace, AutoCloseableCloser closer)
+            throws Exception
+    {
+        return Optional.empty();
+    }
+
+    protected void assertViewDefinition(ConnectorViewDefinition actualView, ConnectorViewDefinition expectedView)
+    {
+        assertThat(actualView.getOriginalSql()).isEqualTo(expectedView.getOriginalSql());
+        assertThat(actualView.getCatalog()).isEqualTo(expectedView.getCatalog());
+        assertThat(actualView.getSchema()).isEqualTo(expectedView.getSchema());
+        assertThat(actualView.getColumns()).hasSize(expectedView.getColumns().size());
+        for (int i = 0; i < actualView.getColumns().size(); i++) {
+            assertViewColumnDefinition(actualView.getColumns().get(i), expectedView.getColumns().get(i));
+        }
+        assertThat(actualView.getOwner()).isEqualTo(expectedView.getOwner());
+        assertThat(actualView.isRunAsInvoker()).isEqualTo(expectedView.isRunAsInvoker());
+    }
+
+    protected String arbitraryTableLocation(TrinoCatalog catalog, ConnectorSession session, SchemaTableName schemaTableName)
             throws Exception
     {
         try {
@@ -450,22 +574,23 @@ public abstract class BaseTrinoCatalogTest
         return tmpDirectory.toString();
     }
 
-    private void assertViewDefinition(ConnectorViewDefinition actualView, ConnectorViewDefinition expectedView)
-    {
-        assertThat(actualView.getOriginalSql()).isEqualTo(expectedView.getOriginalSql());
-        assertThat(actualView.getCatalog()).isEqualTo(expectedView.getCatalog());
-        assertThat(actualView.getSchema()).isEqualTo(expectedView.getSchema());
-        assertThat(actualView.getColumns().size()).isEqualTo(expectedView.getColumns().size());
-        for (int i = 0; i < actualView.getColumns().size(); i++) {
-            assertViewColumnDefinition(actualView.getColumns().get(i), expectedView.getColumns().get(i));
-        }
-        assertThat(actualView.getOwner()).isEqualTo(expectedView.getOwner());
-        assertThat(actualView.isRunAsInvoker()).isEqualTo(expectedView.isRunAsInvoker());
-    }
-
     private void assertViewColumnDefinition(ConnectorViewDefinition.ViewColumn actualViewColumn, ConnectorViewDefinition.ViewColumn expectedViewColumn)
     {
         assertThat(actualViewColumn.getName()).isEqualTo(expectedViewColumn.getName());
         assertThat(actualViewColumn.getType()).isEqualTo(expectedViewColumn.getType());
+    }
+
+    private static ConnectorMaterializedViewDefinition someMaterializedView()
+    {
+        return new ConnectorMaterializedViewDefinition(
+                "select 1",
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                ImmutableList.of(new ConnectorMaterializedViewDefinition.Column("test", BIGINT.getTypeId(), Optional.empty())),
+                Optional.of(Duration.ZERO),
+                Optional.empty(),
+                Optional.of("owner"),
+                ImmutableList.of());
     }
 }

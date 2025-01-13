@@ -29,6 +29,7 @@ import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.Map;
+import java.util.Optional;
 
 import static io.trino.testing.TestingConnectorSession.SESSION;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -63,7 +64,7 @@ public class TestS3TableConfigClient
         assertThat(uri1.toString()).isEqualTo("s3://our.data.warehouse/prod/client_actions");
         assertThat(uri1.getBucket()).isEqualTo("our.data.warehouse");
         assertThat(uri1.getKey()).isEqualTo("prod/client_actions");
-        assertThat(uri1.getRegion() == null).isTrue();
+        assertThat(uri1.getRegion()).isNull();
 
         // show info:
         log.info("Tested out URI1 : %s", uri1);
@@ -75,7 +76,7 @@ public class TestS3TableConfigClient
         assertThat(uri2.toString()).isEqualTo("s3://some.big.bucket/long/complex/path");
         assertThat(uri2.getBucket()).isEqualTo("some.big.bucket");
         assertThat(uri2.getKey()).isEqualTo("long/complex/path");
-        assertThat(uri2.getRegion() == null).isTrue();
+        assertThat(uri2.getRegion()).isNull();
 
         // info:
         log.info("Tested out URI2 : %s", uri2);
@@ -119,7 +120,7 @@ public class TestS3TableConfigClient
 
         KinesisMetadata metadata = (KinesisMetadata) kinesisConnector.getMetadata(SESSION, new ConnectorTransactionHandle() {});
         SchemaTableName tblName = new SchemaTableName("default", "test123");
-        KinesisTableHandle tableHandle = metadata.getTableHandle(SESSION, tblName);
+        KinesisTableHandle tableHandle = metadata.getTableHandle(SESSION, tblName, Optional.empty(), Optional.empty());
         assertThat(metadata).isNotNull();
         SchemaTableName tableSchemaName = tableHandle.schemaTableName();
         assertThat(tableSchemaName.getSchemaName()).isEqualTo("default");
@@ -127,6 +128,6 @@ public class TestS3TableConfigClient
         assertThat(tableHandle.streamName()).isEqualTo("test123");
         assertThat(tableHandle.messageDataFormat()).isEqualTo("json");
         Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(SESSION, tableHandle);
-        assertThat(columnHandles.size()).isEqualTo(12);
+        assertThat(columnHandles).hasSize(12);
     }
 }

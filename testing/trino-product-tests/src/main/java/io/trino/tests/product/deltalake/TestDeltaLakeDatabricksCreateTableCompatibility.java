@@ -41,7 +41,6 @@ import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public class TestDeltaLakeDatabricksCreateTableCompatibility
         extends BaseTestDeltaLakeS3Storage
@@ -80,7 +79,8 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
             }
             else {
                 showCreateTable = format(
-                        "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\nLOCATION 's3://%s/%s'\n",
+                        "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\nLOCATION 's3://%s/%s'\n" +
+                                "TBLPROPERTIES (\n  'delta.enableDeletionVectors' = 'false')\n",
                         tableName,
                         bucketName,
                         tableDirectory);
@@ -124,7 +124,8 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
             else {
                 showCreateTable = format(
                         "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\n" +
-                                "PARTITIONED BY (string)\nLOCATION 's3://%s/%s'\n",
+                                "PARTITIONED BY (string)\nLOCATION 's3://%s/%s'\n" +
+                                "TBLPROPERTIES (\n  'delta.enableDeletionVectors' = 'false')\n",
                         tableName,
                         bucketName,
                         tableDirectory);
@@ -164,7 +165,8 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
             }
             else {
                 showCreateTable = format(
-                        "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\nLOCATION 's3://%s/%s'\n",
+                        "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\nLOCATION 's3://%s/%s'\n" +
+                                "TBLPROPERTIES (\n  'delta.enableDeletionVectors' = 'false')\n",
                         tableName,
                         bucketName,
                         tableDirectory);
@@ -211,7 +213,8 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
             else {
                 showCreateTable = format(
                         "CREATE TABLE `default`.`%s` (\n  `integer` INT,\n  `string` STRING,\n  `timetz` TIMESTAMP)\nUSING DELTA\n" +
-                                "PARTITIONED BY (string)\nLOCATION 's3://%s/%s'\n",
+                                "PARTITIONED BY (string)\nLOCATION 's3://%s/%s'\n" +
+                                "TBLPROPERTIES (\n  'delta.enableDeletionVectors' = 'false')\n",
                         tableName,
                         bucketName,
                         tableDirectory);
@@ -258,8 +261,8 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
                 tableDirectory));
 
         try {
-            assertEquals(getTableCommentOnTrino("default", tableName), "test comment");
-            assertEquals(getTableCommentOnDelta("default", tableName), "test comment");
+            assertThat(getTableCommentOnTrino("default", tableName)).isEqualTo("test comment");
+            assertThat(getTableCommentOnDelta("default", tableName)).isEqualTo("test comment");
         }
         finally {
             onTrino().executeQuery("DROP TABLE delta.default." + tableName);
@@ -279,13 +282,13 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
                 tableDirectory));
 
         try {
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test comment");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test comment");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test comment");
+            assertThat(getColumnCommentOnDelta("default", tableName, "col")).isEqualTo("test comment");
 
             // Verify that adding a new column doesn't remove existing column comments
             onTrino().executeQuery("ALTER TABLE delta.default." + tableName + " ADD COLUMN new_col INT");
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test comment");
-            assertEquals(getColumnCommentOnDelta("default", tableName, "col"), "test comment");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test comment");
+            assertThat(getColumnCommentOnDelta("default", tableName, "col")).isEqualTo("test comment");
         }
         finally {
             onTrino().executeQuery("DROP TABLE delta.default." + tableName);
@@ -305,7 +308,7 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
                 tableDirectory));
 
         try {
-            assertEquals(getColumnCommentOnTrino("default", tableName, "col"), "test comment");
+            assertThat(getColumnCommentOnTrino("default", tableName, "col")).isEqualTo("test comment");
         }
         finally {
             dropDeltaTableWithRetry("default." + tableName);
@@ -398,8 +401,16 @@ public class TestDeltaLakeDatabricksCreateTableCompatibility
 
     private String getDatabricksDefaultTableProperties()
     {
+        if (databricksRuntimeVersion.equals(DATABRICKS_104_RUNTIME_VERSION)) {
+            return "TBLPROPERTIES (\n" +
+                    "  'Type' = 'EXTERNAL',\n" +
+                    "  'delta.enableDeletionVectors' = 'false',\n" +
+                    "  'delta.minReaderVersion' = '1',\n" +
+                    "  'delta.minWriterVersion' = '2')\n";
+        }
         if (databricksRuntimeVersion.isAtLeast(DATABRICKS_113_RUNTIME_VERSION)) {
             return "TBLPROPERTIES (\n" +
+                    "  'delta.enableDeletionVectors' = 'false',\n" +
                     "  'delta.minReaderVersion' = '1',\n" +
                     "  'delta.minWriterVersion' = '2')\n";
         }

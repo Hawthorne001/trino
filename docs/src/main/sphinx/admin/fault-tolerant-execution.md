@@ -23,7 +23,7 @@ fault-tolerant execution to improve query processing resilience, read
 
 ## Configuration
 
-Fault-tolerant execution is disabled by default. To enable the feature, set the
+Fault-tolerant execution is turned off by default. To enable the feature, set the
 `retry-policy` configuration property to either `QUERY` or `TASK`
 depending on the desired {ref}`retry policy <fte-retry-policy>`.
 
@@ -44,6 +44,7 @@ connector. The following connectors support fault-tolerant execution:
 - {ref}`Delta Lake connector <delta-lake-fte-support>`
 - {ref}`Hive connector <hive-fte-support>`
 - {ref}`Iceberg connector <iceberg-fte-support>`
+- {ref}`MariaDB connector <mariadb-fte-support>`
 - {ref}`MongoDB connector <mongodb-fte-support>`
 - {ref}`MySQL connector <mysql-fte-support>`
 - {ref}`Oracle connector <oracle-fte-support>`
@@ -65,18 +66,21 @@ execution on a Trino cluster:
 * - `retry-policy`
   - Configures what is retried in the event of failure, either `QUERY` to retry
     the whole query, or `TASK` to retry tasks individually if they fail. See
-    [retry policy](fte-retry-policy) for more information.
+    [retry policy](fte-retry-policy) for more information. Use the equivalent
+    session property `retry_policy` only on clusters configured for
+    fault-tolerant execution and typically only to deactivate with `NONE`, since
+    switching between modes on a cluster is not tested.
   - `NONE`
 * - `exchange.deduplication-buffer-size`
   - [Data size](prop-type-data-size) of the coordinator's in-memory buffer used
     by fault-tolerant execution to store output of query
     [stages](trino-concept-stage). If this buffer is filled during query
-    execution, the query fails with a "Task descriptor storage capacity has been
-    exceeded" error message unless an [exchange manager](fte-exchange-manager)
-    is configured.
+    execution, the query fails with a "Exchange manager must be configured for 
+    the failure recovery capabilities to be fully functional" error message unless an 
+    [exchange manager](fte-exchange-manager) is configured.
   - `32MB`
 * - `fault-tolerant-execution.exchange-encryption-enabled`
-  - Enable encryption of spooling data, see [Encryption](fte-encryption) for details. 
+  - Enable encryption of spooling data, see [Encryption](fte-encryption) for details.
     Setting this property to false is not recommended if Trino processes sensitive data.
   - ``true``
 :::
@@ -85,16 +89,16 @@ Find further related properties in [](/admin/properties), specifically in
 [](/admin/properties-resource-management) and [](/admin/properties-exchange).
 
 (fte-retry-policy)=
-
 ## Retry policy
 
-The `retry-policy` configuration property designates whether Trino retries
-entire queries or a query's individual tasks in the event of failure.
+The `retry-policy` configuration property, or the `retry_policy` session
+property, designates whether Trino retries entire queries or a query's
+individual tasks in the event of failure.
 
 ### QUERY
 
 A `QUERY` retry policy instructs Trino to automatically retry a query in the
-event of an error occuring on a worker node. A `QUERY` retry policy is
+event of an error occurring on a worker node. A `QUERY` retry policy is
 recommended when the majority of the Trino cluster's workload consists of many
 small queries.
 
@@ -124,20 +128,11 @@ configuration properties have their default values changed to follow best
 practices for a fault-tolerant cluster. However, this automatic change does not
 affect clusters that have these properties manually configured. If you have
 any of the following properties configured in the `config.properties` file on
-a cluster with a `TASK` retry policy, it is strongly recommended to make the
-following changes:
-
-- Set the `task.low-memory-killer.policy`
-  {doc}`query management property </admin/properties-query-management>` to
-  `total-reservation-on-blocked-nodes`, or queries may
-  need to be manually killed if the cluster runs out of memory.
-- Set the `query.low-memory-killer.delay`
-  {doc}`query management property </admin/properties-query-management>` to
-  `0s` so the cluster immediately unblocks nodes that run out of memory.
-- Modify the `query.remote-task.max-error-duration`
-  {doc}`query management property </admin/properties-query-management>`
-  to adjust how long Trino allows a remote task to try reconnecting before
-  considering it lost and rescheduling.
+a cluster with a `TASK` retry policy, it is strongly recommended to set the
+`task.low-memory-killer.policy`
+{doc}`query management property </admin/properties-query-management>` to
+`total-reservation-on-blocked-nodes`, or queries may need to be manually killed
+if the cluster runs out of memory.
 
 :::{note}
 A `TASK` retry policy is best suited for large batch queries, but this
@@ -246,7 +241,7 @@ properties only apply to a `TASK` retry policy.
     May be overridden for the current session with the
     `fault_tolerant_execution_max_task_split_count` [session
     property](session-properties-definition).
-  - `256`
+  - `2048`
 * - `fault-tolerant-execution-arbitrary-distribution-compute-task-target-size-growth-period`
   - The number of tasks created for any given non-writer stage of arbitrary
     distribution before task size is increased.
@@ -305,7 +300,7 @@ available memory on a node, the task is restarted with a request to allocate the
 full node for its execution.
 
 The initial task memory-requirements estimation is static and configured with
-the `fault-tolerant-task-memory` configuration property. This property only
+the `fault-tolerant-execution-task-memory` configuration property. This property only
 applies to a `TASK` retry policy.
 
 :::{list-table} Node allocation configuration properties
@@ -347,9 +342,9 @@ fault-tolerant execution:
   - Maximum number of partitions to use for distributed joins and aggregations,
     similar in function to the ``query.max-hash-partition-count`` [query
     management property](/admin/properties-query-management). It is not
-    recommended to increase this property value above the default of `50`, which
-    may result in instability and poor performance. May be overridden for the
-    current session with the `fault_tolerant_execution_max_partition_count`
+    recommended to increase this property value higher than the default of `50`,
+    which may result in instability and poor performance. May be overridden for
+    the current session with the `fault_tolerant_execution_max_partition_count`
     [session property](session-properties-definition).
   - `50`
   - Only `TASK`
@@ -372,15 +367,14 @@ fault-tolerant execution:
     property](session-properties-definition).
   - `50`
   - Only `TASK`
-* - `max-tasks-waiting-for-node-per-stage`
+* - `max-tasks-waiting-for-node-per-query`
   - Allow for up to configured number of tasks to wait for node allocation
-    per stage, before pausing scheduling for other tasks from this stage.
-  - 5
+    per query, before pausing scheduling for other tasks from this query.
+  - `50`
   - Only `TASK`
 :::
 
 (fte-exchange-manager)=
-
 ## Exchange manager
 
 Exchange spooling is responsible for storing and managing spooled data for
@@ -399,7 +393,7 @@ property to `filesystem` or `hdfs`, and set additional configuration properties 
 for your storage solution.
 
 The following table lists the available configuration properties for
-`exchange-manager.properties`, their default values, and which filesystem(s)
+`exchange-manager.properties`, their default values, and which file systems
 the property may be configured for:
 
 :::{list-table} Exchange manager configuration properties
@@ -459,12 +453,11 @@ the property may be configured for:
   - AWS S3, GCS
 * - `exchange.s3.endpoint`
   - S3 storage endpoint server if using an S3-compatible storage system that
-    is not AWS. If using AWS S3, this can be ignored unless HTTPS is required 
-    by an AWS bucket policy. If TLS is required, then this property can be 
-    set to an https endpoint such as ``https://s3.us-east-1.amazonaws.com``. 
-    Note that TLS is redundant due to {ref}`automatic encryption <fte-encryption>`. 
-    If using GCS, set it
-    to `https://storage.googleapis.com`.
+    is not AWS. If using AWS S3, this can be ignored unless HTTPS is required
+    by an AWS bucket policy. If TLS is required, then this property can be
+    set to an https endpoint such as ``https://s3.us-east-1.amazonaws.com``.
+    Note that TLS is redundant due to {ref}`automatic encryption <fte-encryption>`.
+    If using GCS, set it to `https://storage.googleapis.com`.
   -
   - Any S3-compatible storage
 * - `exchange.s3.max-error-retries`
@@ -491,8 +484,14 @@ the property may be configured for:
     together with `exchange.gcs.json-key-file-path`
   -
   - GCS
+* - `exchange.azure.endpoint`
+  - Azure blob endpoint used to access the spooling container. Not to be set
+    together with `exchange.azure.connection-string`
+  - 
+  - Azure Blob Storage
 * - `exchange.azure.connection-string`
-  - Connection string used to access the spooling container.
+  - Connection string used to access the spooling container. Not to be set
+    together with `exchange.azure.endpoint`
   -
   - Azure Blob Storage
 * - `exchange.azure.block-size`
@@ -516,19 +515,23 @@ the property may be configured for:
   - HDFS
 :::
 
-It is recommended to set the `exchange.compression-codec` property to
-`LZ4` in the cluster's `config.properties` file, to reduce the exchange
-manager's overall I/O load. It is also recommended to configure a bucket
-lifecycle rule to automatically expire abandoned objects in the event of a node
-crash.
+To reduce the exchange manager's overall I/O load, the
+[](prop-exchange-compression-codec) configuration property defaults to `LZ4`. In
+addition, [](file-compression) is automatically performed and some details can
+be configured.
+
+It is also recommended to configure a bucket lifecycle rule to automatically
+expire abandoned objects in the event of a node crash.
 
 (fte-exchange-aws-s3)=
-
 #### AWS S3
 
 The following example `exchange-manager.properties` configuration specifies an
 AWS S3 bucket as the spooling storage destination. Note that the destination
-does not have to be in AWS, but can be any S3-compatible storage system.
+does not have to be in AWS, but can be any S3-compatible storage system. While
+the exchange manager is designed to support S3-compatible storage systems, only
+AWS S3 and MinIO are tested for compatibility. For other storage systems,
+perform your own testing and consult your vendor for more information.
 
 ```properties
 exchange-manager.name=filesystem
@@ -551,7 +554,6 @@ exchange.base-directories=s3://exchange-spooling-bucket-1,s3://exchange-spooling
 ```
 
 (fte-exchange-azure-blob)=
-
 #### Azure Blob Storage
 
 The following example `exchange-manager.properties` configuration specifies an
@@ -566,7 +568,6 @@ exchange.azure.connection-string=connection-string
 ```
 
 (fte-exchange-gcs)=
-
 #### Google Cloud Storage
 
 To enable exchange spooling on GCS in Trino, change the request endpoint to the
@@ -592,7 +593,6 @@ exchange.gcs.json-key-file-path=/path/to/gcs_keyfile.json
 ```
 
 (fte-exchange-hdfs)=
-
 #### HDFS
 
 The following `exchange-manager.properties` configuration example specifies HDFS
@@ -605,7 +605,6 @@ hdfs.config.resources=/usr/lib/hadoop/etc/hadoop/core-site.xml
 ```
 
 (fte-exchange-local-filesystem)=
-
 #### Local filesystem storage
 
 The following example `exchange-manager.properties` configuration specifies a
@@ -623,3 +622,10 @@ from all worker nodes.
 exchange-manager.name=filesystem
 exchange.base-directories=/tmp/trino-exchange-manager
 ```
+
+## Adaptive plan optimizations
+
+Fault-tolerant execution mode offers several adaptive plan 
+optimizations that adjust query execution plans dynamically based on 
+runtime statistics. For more information, see 
+[](/optimizer/adaptive-plan-optimizations).

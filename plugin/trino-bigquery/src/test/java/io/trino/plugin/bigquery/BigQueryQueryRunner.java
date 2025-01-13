@@ -115,10 +115,10 @@ public final class BigQueryQueryRunner
                 Map<String, String> connectorProperties = new HashMap<>(ImmutableMap.copyOf(this.connectorProperties));
                 connectorProperties.putIfAbsent("bigquery.views-enabled", "true");
                 connectorProperties.putIfAbsent("bigquery.view-expire-duration", "30m");
-                connectorProperties.putIfAbsent("bigquery.rpc-retries", "4");
+                connectorProperties.putIfAbsent("bigquery.rpc-retries", "10");
                 connectorProperties.putIfAbsent("bigquery.rpc-retry-delay", "200ms");
                 connectorProperties.putIfAbsent("bigquery.rpc-retry-delay-multiplier", "1.5");
-                connectorProperties.putIfAbsent("bigquery.rpc-timeout", "8s");
+                connectorProperties.putIfAbsent("bigquery.rpc-timeout", "30s");
 
                 queryRunner.installPlugin(new BigQueryPlugin());
                 queryRunner.createCatalog("bigquery", "bigquery", connectorProperties);
@@ -222,7 +222,7 @@ public final class BigQueryQueryRunner
             throws Exception
     {
         QueryRunner queryRunner = BigQueryQueryRunner.builder()
-                .setExtraProperties(Map.of("http-server.http.port", "8080"))
+                .setCoordinatorProperties(Map.of("http-server.http.port", "8080"))
                 .setInitialTables(TpchTable.getTables())
                 .build();
         Logger log = Logger.get(BigQueryQueryRunner.class);

@@ -89,14 +89,12 @@ public class Metrics
     {
         private final Map<String, List<Metric<?>>> groupedMetrics = new HashMap<>();
 
-        private Accumulator()
-        {
-        }
+        private Accumulator() {}
 
         public Accumulator add(Metrics metrics)
         {
             metrics.getMetrics().forEach((key, value) ->
-                    groupedMetrics.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value));
+                    groupedMetrics.computeIfAbsent(key, _ -> new ArrayList<>()).add(value));
             return this;
         }
 

@@ -25,15 +25,20 @@ import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
 import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.filesystem.cache.CachingHostAddressProvider;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Partition;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.HivePartition;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.HiveTypeName;
+import io.trino.metastore.Partition;
+import io.trino.metastore.SortingColumn;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
-import io.trino.plugin.hive.metastore.SortingColumn;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.util.HiveBucketing.HiveBucketFilter;
 import io.trino.plugin.hive.util.HiveUtil;
 import io.trino.spi.TrinoException;
 import io.trino.spi.VersionEmbedder;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
@@ -44,6 +49,7 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.TypeManager;
 import jakarta.annotation.Nullable;
 import org.weakref.jmx.Managed;
@@ -69,11 +75,12 @@ import static com.google.common.collect.Iterators.peekingIterator;
 import static com.google.common.collect.Iterators.singletonIterator;
 import static com.google.common.collect.Iterators.transform;
 import static com.google.common.collect.Streams.stream;
+import static io.trino.metastore.HivePartition.UNPARTITIONED_ID;
 import static io.trino.plugin.hive.BackgroundHiveSplitLoader.BucketSplitInfo.createBucketSplitInfo;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_PARTITION_DROPPED_DURING_QUERY;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_PARTITION_SCHEMA_MISMATCH;
-import static io.trino.plugin.hive.HivePartition.UNPARTITIONED_ID;
+import static io.trino.plugin.hive.HivePartitionManager.partitionMatches;
 import static io.trino.plugin.hive.HiveSessionProperties.getDynamicFilteringWaitTimeout;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.HiveSessionProperties.isIgnoreAbsentPartitions;
@@ -218,12 +225,12 @@ public class HiveSplitManager
         Optional<HiveBucketFilter> bucketFilter = hiveTable.getBucketFilter();
 
         // validate bucket bucketed execution
-        Optional<HiveBucketHandle> bucketHandle = hiveTable.getBucketHandle();
+        Optional<HiveTablePartitioning> tablePartitioning = hiveTable.getTablePartitioning();
 
-        bucketHandle.ifPresent(bucketing ->
-                verify(bucketing.readBucketCount() <= bucketing.tableBucketCount(),
+        tablePartitioning.ifPresent(bucketing ->
+                verify(bucketing.partitioningHandle().getBucketCount() <= bucketing.tableBucketCount(),
                         "readBucketCount (%s) is greater than the tableBucketCount (%s) which generally points to an issue in plan generation",
-                        bucketing.readBucketCount(),
+                        bucketing.partitioningHandle().getBucketCount(),
                         bucketing.tableBucketCount()));
 
         // get partitions
@@ -247,8 +254,10 @@ public class HiveSplitManager
                 metastore,
                 table,
                 peekingIterator(partitions),
-                bucketHandle.map(HiveBucketHandle::toTableBucketProperty),
-                neededColumnNames);
+                tablePartitioning.map(HiveTablePartitioning::toTableBucketProperty),
+                neededColumnNames,
+                dynamicFilter,
+                hiveTable);
 
         HiveSplitLoader hiveSplitLoader = new BackgroundHiveSplitLoader(
                 table,
@@ -257,7 +266,7 @@ public class HiveSplitManager
                 dynamicFilter,
                 getDynamicFilteringWaitTimeout(session),
                 typeManager,
-                createBucketSplitInfo(bucketHandle, bucketFilter),
+                createBucketSplitInfo(tablePartitioning, bucketFilter),
                 session,
                 fileSystemFactory,
                 transactionalMetadata.getDirectoryLister(),
@@ -301,7 +310,9 @@ public class HiveSplitManager
             Table table,
             PeekingIterator<HivePartition> hivePartitions,
             Optional<HiveBucketProperty> bucketProperty,
-            Set<String> neededColumnNames)
+            Set<String> neededColumnNames,
+            DynamicFilter dynamicFilter,
+            HiveTableHandle tableHandle)
     {
         if (!hivePartitions.hasNext()) {
             return emptyIterator();
@@ -320,6 +331,15 @@ public class HiveSplitManager
 
         Iterator<List<HivePartition>> partitionNameBatches = partitionExponentially(hivePartitions, minPartitionBatchSize, maxPartitionBatchSize);
         Iterator<List<HivePartitionMetadata>> partitionBatches = transform(partitionNameBatches, partitionBatch -> {
+            // Use dynamic filters to reduce the partitions listed by getPartitionsByNames
+            TupleDomain<ColumnHandle> currentDynamicFilter = dynamicFilter.getCurrentPredicate();
+            if (!currentDynamicFilter.isAll()) {
+                TupleDomain<ColumnHandle> partitionsFilter = currentDynamicFilter.intersect(tableHandle.getCompactEffectivePredicate());
+                partitionBatch = partitionBatch.stream()
+                        .filter(hivePartition -> partitionMatches(tableHandle.getPartitionColumns(), partitionsFilter, hivePartition))
+                        .collect(toImmutableList());
+            }
+
             SchemaTableName tableName = table.getSchemaTableName();
             Map<String, Optional<Partition>> partitions = metastore.getPartitionsByNames(
                     tableName.getSchemaName(),

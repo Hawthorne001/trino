@@ -26,9 +26,9 @@ import io.trino.metadata.TableHandle;
 import io.trino.parquet.writer.ParquetSchemaConverter;
 import io.trino.parquet.writer.ParquetWriter;
 import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
 import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveTransactionHandle;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
@@ -103,7 +103,7 @@ public class TestDeltaLakeNodeLocalDynamicSplitPruning
             TrinoInputFile inputFile = new LocalInputFile(file.file());
 
             try (ParquetWriter writer = createParquetWriter(outputFile, schemaConverter)) {
-                BlockBuilder keyBuilder = INTEGER.createBlockBuilder(null, 1);
+                BlockBuilder keyBuilder = INTEGER.createFixedSizeBlockBuilder(1);
                 INTEGER.writeLong(keyBuilder, keyColumnValue);
                 BlockBuilder dataBuilder = VARCHAR.createBlockBuilder(null, 1);
                 VARCHAR.writeString(dataBuilder, dataColumnValue);
@@ -204,7 +204,7 @@ public class TestDeltaLakeNodeLocalDynamicSplitPruning
             try (ParquetWriter writer = createParquetWriter(outputFile, schemaConverter)) {
                 BlockBuilder receiptBuilder = VARCHAR.createBlockBuilder(null, 1);
                 VARCHAR.writeString(receiptBuilder, receiptColumnValue);
-                BlockBuilder amountBuilder = amountColumnType.createBlockBuilder(null, 1);
+                BlockBuilder amountBuilder = amountColumnType.createFixedSizeBlockBuilder(1);
                 writeShortDecimal(amountBuilder, amountColumnValue.unscaledValue().longValueExact());
                 writer.write(new Page(receiptBuilder.build(), amountBuilder.build()));
             }

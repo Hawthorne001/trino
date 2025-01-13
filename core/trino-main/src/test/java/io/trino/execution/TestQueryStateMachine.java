@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.testing.TestingTicker;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -88,7 +89,7 @@ import static io.trino.execution.QueryState.RUNNING;
 import static io.trino.execution.QueryState.STARTING;
 import static io.trino.execution.QueryState.WAITING_FOR_RESOURCES;
 import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
-import static io.trino.metadata.MetadataManager.createTestMetadataManager;
+import static io.trino.metadata.TestMetadataManager.createTestMetadataManager;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.trino.spi.StandardErrorCode.USER_CANCELED;
@@ -688,13 +689,13 @@ public class TestQueryStateMachine
         QueryInfo queryInfo = stateMachine.getQueryInfo(Optional.empty());
         assertThat(queryInfo.getQueryId()).isEqualTo(TEST_SESSION.getQueryId());
         assertThat(queryInfo.getSelf()).isEqualTo(LOCATION);
-        assertThat(queryInfo.getOutputStage().isPresent()).isFalse();
+        assertThat(queryInfo.getOutputStage()).isEmpty();
         assertThat(queryInfo.getQuery()).isEqualTo(QUERY);
         assertThat(queryInfo.getInputs()).containsExactlyElementsOf(INPUTS);
         assertThat(queryInfo.getOutput()).isEqualTo(OUTPUT);
         assertThat(queryInfo.getFieldNames()).containsExactlyElementsOf(OUTPUT_FIELD_NAMES);
         assertThat(queryInfo.getUpdateType()).isEqualTo(UPDATE_TYPE);
-        assertThat(queryInfo.getQueryType().isPresent()).isTrue();
+        assertThat(queryInfo.getQueryType()).isPresent();
         assertThat(queryInfo.getQueryType().get()).isEqualTo(QUERY_TYPE.get());
 
         QueryStats queryStats = queryInfo.getQueryStats();
@@ -846,6 +847,7 @@ public class TestQueryStateMachine
                     emptyEventListenerManager(),
                     new AccessControlConfig(),
                     OpenTelemetry.noop(),
+                    new SecretsResolver(ImmutableMap.of()),
                     DefaultSystemAccessControl.NAME);
             accessControl.setSystemAccessControls(List.of(AllowAllSystemAccessControl.INSTANCE));
             QueryStateMachine stateMachine = QueryStateMachine.beginWithTicker(
@@ -864,7 +866,7 @@ public class TestQueryStateMachine
                     warningCollector,
                     createPlanOptimizersStatsCollector(),
                     QUERY_TYPE,
-                    true,
+                    false,
                     new NodeVersion("test"));
             stateMachine.setInputs(INPUTS);
             stateMachine.setOutput(OUTPUT);

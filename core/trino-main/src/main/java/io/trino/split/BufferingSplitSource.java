@@ -126,7 +126,7 @@ public class BufferingSplitSource
         {
             checkState(nextBatchFuture == null || nextBatchFuture.isDone(), "nextBatchFuture is expected to be done");
 
-            try (var ignored = context.makeCurrent()) {
+            try (var _ = context.makeCurrent()) {
                 nextBatchFuture = splitSource.getNextBatch(max - splits.size());
                 // If the split source returns completed futures, we process them on
                 // directExecutor without chaining to avoid the overhead of going through separate executor
@@ -163,10 +163,15 @@ public class BufferingSplitSource
                         public void onSuccess(SplitBatch splitBatch)
                         {
                             synchronized (GetNextBatch.this) {
-                                if (processBatch(splitBatch)) {
-                                    return;
+                                try {
+                                    if (processBatch(splitBatch)) {
+                                        return;
+                                    }
+                                    fetchSplits();
                                 }
-                                fetchSplits();
+                                catch (Exception e) {
+                                    setException(e);
+                                }
                             }
                         }
 

@@ -21,7 +21,7 @@ import io.opentelemetry.semconv.ExceptionAttributes;
 
 import java.util.Optional;
 
-final class Tracing
+public final class Tracing
 {
     private Tracing() {}
 
@@ -43,7 +43,7 @@ final class Tracing
     public static <T, E extends Exception> T withTracing(Span span, CheckedSupplier<T, E> supplier)
             throws E
     {
-        try (var ignored = span.makeCurrent()) {
+        try (var _ = span.makeCurrent()) {
             return supplier.get();
         }
         catch (Throwable t) {

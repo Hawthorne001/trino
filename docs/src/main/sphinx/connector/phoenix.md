@@ -20,7 +20,12 @@ To query HBase data through Phoenix, you need:
 
 - Network access from the Trino coordinator and workers to the ZooKeeper
   servers. The default port is 2181.
-- A compatible version of Phoenix: all 5.x versions starting from 5.1.0 are supported.
+- A compatible version of Phoenix: all 5.x versions starting from 5.2.0 are supported.
+- The Trino [](jvm-config) must allow using the Java security manager:
+  ```text
+  # https://bugs.openjdk.org/browse/JDK-8327134
+  -Djava.security.manager=allow
+  ```
 
 ## Configuration
 
@@ -55,13 +60,7 @@ The following Phoenix-specific configuration properties are available:
 ```{include} jdbc-domain-compaction-threshold.fragment
 ```
 
-```{include} jdbc-procedures.fragment
-```
-
 ```{include} jdbc-case-insensitive-matching.fragment
-```
-
-```{include} non-transactional-insert.fragment
 ```
 
 ## Querying Phoenix tables
@@ -98,7 +97,6 @@ If you used a different name for your catalog properties file, use
 that catalog name instead of `example` in the above examples.
 
 (phoenix-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Phoenix each support types that the other does not, this
@@ -202,8 +200,6 @@ table:
   - `VARCHAR(n)`
 * - `VARBINARY`
   - `VARBINARY`
-* - `TIME`
-  - `TIME`
 * - `DATE`
   - `DATE`
 * - `ARRAY`
@@ -267,22 +263,38 @@ Use them in the same way as above: in the `WITH` clause of the `CREATE TABLE` st
 | `bloomfilter`         | `NONE`        | Bloomfilter to use. Valid values are `NONE` (default), `ROW`, or `ROWCOL`.                                             |
 
 (phoenix-sql-support)=
-
 ## SQL support
 
-The connector provides read and write access to data and metadata in
-Phoenix. In addition to the {ref}`globally available
-<sql-globally-available>` and {ref}`read operation <sql-read-operations>`
-statements, the connector supports the following features:
+The connector provides read and write access to data and metadata in Phoenix. In
+addition to the [globally available](sql-globally-available) and [read
+operation](sql-read-operations) statements, the connector supports the following
+features:
 
-- {doc}`/sql/insert`
-- {doc}`/sql/delete`
-- {doc}`/sql/merge`
-- {doc}`/sql/create-table`
-- {doc}`/sql/create-table-as`
-- {doc}`/sql/drop-table`
-- {doc}`/sql/create-schema`
-- {doc}`/sql/drop-schema`
+- [](/sql/insert), see also [](phoenix-insert)
+- [](/sql/update)
+- [](/sql/delete), see also [](phoenix-delete)
+- [](/sql/merge), see also [](phoenix-merge)
+- [](/sql/create-table)
+- [](/sql/create-table-as)
+- [](/sql/drop-table)
+- [](/sql/create-schema)
+- [](/sql/drop-schema)
+- [](phoenix-procedures)
 
+(phoenix-insert)=
+```{include} non-transactional-insert.fragment
+```
+
+(phoenix-delete)=
 ```{include} sql-delete-limitation.fragment
+```
+
+(phoenix-merge)=
+```{include} non-transactional-merge.fragment
+```
+
+(phoenix-procedures)=
+### Procedures
+
+```{include} procedures-execute.fragment
 ```

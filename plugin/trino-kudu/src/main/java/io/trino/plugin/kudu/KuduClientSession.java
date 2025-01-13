@@ -15,8 +15,11 @@ package io.trino.plugin.kudu;
 
 import com.google.common.collect.ImmutableList;
 import io.airlift.log.Logger;
+import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 import io.trino.plugin.kudu.properties.ColumnDesign;
 import io.trino.plugin.kudu.properties.HashPartitionDefinition;
+import io.trino.plugin.kudu.properties.KuduColumnProperties;
 import io.trino.plugin.kudu.properties.KuduTableProperties;
 import io.trino.plugin.kudu.properties.PartitionDesign;
 import io.trino.plugin.kudu.properties.RangePartition;
@@ -58,6 +61,7 @@ import org.apache.kudu.client.PartitionSchema.HashBucketSchema;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -178,7 +182,7 @@ public class KuduClientSession
                         .boxed().collect(toList());
                 for (ColumnHandle column : desiredColumns.get()) {
                     KuduColumnHandle k = (KuduColumnHandle) column;
-                    int index = k.getOrdinalPosition();
+                    int index = k.ordinalPosition();
                     if (index >= primaryKeyColumnCount) {
                         columnIndexes.add(index);
                     }
@@ -194,7 +198,7 @@ public class KuduClientSession
         else {
             if (desiredColumns.isPresent()) {
                 columnIndexes = desiredColumns.get().stream()
-                        .map(handle -> ((KuduColumnHandle) handle).getOrdinalPosition())
+                        .map(handle -> ((KuduColumnHandle) handle).ordinalPosition())
                         .collect(toImmutableList());
             }
             else {
@@ -323,12 +327,12 @@ public class KuduClientSession
             String rawName = schemaEmulation.toRawName(schemaTableName);
             AlterTableOptions alterOptions = new AlterTableOptions();
             Type type = TypeHelper.toKuduClientType(column.getType());
-            alterOptions.addColumn(
-                    new ColumnSchemaBuilder(column.getName(), type)
-                            .nullable(true)
-                            .defaultValue(null)
-                            .comment(nullToEmpty(column.getComment())) // Kudu doesn't allow null comment
-                            .build());
+            ColumnSchemaBuilder builder = new ColumnSchemaBuilder(column.getName(), type)
+                    .nullable(true)
+                    .defaultValue(null)
+                    .comment(nullToEmpty(column.getComment())); // Kudu doesn't allow null comment
+            setTypeAttributes(column, builder);
+            alterOptions.addColumn(builder.build());
             client.alterTable(rawName, alterOptions);
         }
         catch (KuduException e) {
@@ -413,7 +417,7 @@ public class KuduClientSession
     private ColumnSchema toColumnSchema(ColumnMetadata columnMetadata)
     {
         String name = columnMetadata.getName();
-        ColumnDesign design = KuduTableProperties.getColumnDesign(columnMetadata.getProperties());
+        ColumnDesign design = KuduColumnProperties.getColumnDesign(columnMetadata.getProperties());
         Type ktype = TypeHelper.toKuduClientType(columnMetadata.getType());
         ColumnSchemaBuilder builder = new ColumnSchemaBuilder(name, ktype);
         builder.key(design.isPrimaryKey()).nullable(design.isNullable());
@@ -437,7 +441,7 @@ public class KuduClientSession
     {
         if (design.getCompression() != null) {
             try {
-                CompressionAlgorithm algorithm = KuduTableProperties.lookupCompression(design.getCompression());
+                CompressionAlgorithm algorithm = KuduColumnProperties.lookupCompression(design.getCompression());
                 builder.compressionAlgorithm(algorithm);
             }
             catch (IllegalArgumentException e) {
@@ -450,7 +454,7 @@ public class KuduClientSession
     {
         if (design.getEncoding() != null) {
             try {
-                Encoding encoding = KuduTableProperties.lookupEncoding(design.getEncoding());
+                Encoding encoding = KuduColumnProperties.lookupEncoding(design.getEncoding());
                 builder.encoding(encoding);
             }
             catch (IllegalArgumentException e) {
@@ -503,7 +507,7 @@ public class KuduClientSession
 
         Schema schema = table.getSchema();
         constraintSummary.getDomains().orElseThrow().forEach((columnHandle, domain) -> {
-            int position = ((KuduColumnHandle) columnHandle).getOrdinalPosition();
+            int position = ((KuduColumnHandle) columnHandle).ordinalPosition();
             ColumnSchema columnSchema = schema.getColumnByIndex(position);
             verify(!domain.isNone(), "Domain is none");
             if (domain.isAll()) {
@@ -529,8 +533,8 @@ public class KuduClientSession
                     KuduPredicate predicate = createInListPredicate(columnSchema, discreteValues);
                     builder.addPredicate(predicate);
                 }
-                else if (valueSet instanceof SortedRangeSet) {
-                    Ranges ranges = ((SortedRangeSet) valueSet).getRanges();
+                else if (valueSet instanceof SortedRangeSet sortedRangeSet) {
+                    Ranges ranges = sortedRangeSet.getRanges();
                     List<Range> rangeList = ranges.getOrderedRanges();
                     if (rangeList.stream().allMatch(Range::isSingleValue)) {
                         io.trino.spi.type.Type type = TypeHelper.fromKuduColumn(columnSchema);
@@ -577,35 +581,39 @@ public class KuduClientSession
     {
         io.trino.spi.type.Type type = TypeHelper.fromKuduColumn(columnSchema);
         Object javaValue = TypeHelper.getJavaValue(type, value);
-        if (javaValue instanceof Long) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Long) javaValue);
+        if (javaValue instanceof Long longValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, longValue);
         }
-        if (javaValue instanceof BigDecimal) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (BigDecimal) javaValue);
+        if (javaValue instanceof BigDecimal bigDecimal) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, bigDecimal);
         }
-        if (javaValue instanceof Integer) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Integer) javaValue);
+        if (javaValue instanceof Integer integerValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, integerValue);
         }
-        if (javaValue instanceof Short) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Short) javaValue);
+        if (javaValue instanceof Short shortValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, shortValue);
         }
-        if (javaValue instanceof Byte) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Byte) javaValue);
+        if (javaValue instanceof Byte byteValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, byteValue);
         }
-        if (javaValue instanceof String) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (String) javaValue);
+        if (javaValue instanceof String stringValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, stringValue);
         }
-        if (javaValue instanceof Double) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Double) javaValue);
+        if (javaValue instanceof Double doubleValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, doubleValue);
         }
-        if (javaValue instanceof Float) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Float) javaValue);
+        if (javaValue instanceof Float floatValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, floatValue);
         }
-        if (javaValue instanceof Boolean) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (Boolean) javaValue);
+        if (javaValue instanceof Boolean booleanValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, booleanValue);
         }
-        if (javaValue instanceof byte[]) {
-            return KuduPredicate.newComparisonPredicate(columnSchema, op, (byte[]) javaValue);
+        if (javaValue instanceof byte[] byteArrayValue) {
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, byteArrayValue);
+        }
+        if (javaValue instanceof ByteBuffer byteBuffer) {
+            Slice slice = Slices.wrappedHeapBuffer(byteBuffer);
+            return KuduPredicate.newComparisonPredicate(columnSchema, op, slice.getBytes(0, slice.length()));
         }
         if (javaValue == null) {
             throw new IllegalStateException("Unexpected null java value for column " + columnSchema.getName());

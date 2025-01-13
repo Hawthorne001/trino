@@ -212,7 +212,7 @@ class TestMemoryPools
 
         // free all for test_tag2
         testPool.free(testTask, "test_tag2", 20);
-        assertThat(testPool.getTaggedMemoryAllocations().size()).isEqualTo(0);
+        assertThat(testPool.getTaggedMemoryAllocations()).isEmpty();
     }
 
     @Test
@@ -301,6 +301,25 @@ class TestMemoryPools
         assertThat(testPool.getTaskMemoryReservation(q1task1)).isEqualTo(0L);
         assertThat(testPool.getTaskMemoryReservation(q1task2)).isEqualTo(0L);
         assertThat(testPool.getTaskMemoryReservation(q2task1)).isEqualTo(9L);
+    }
+
+    @Test
+    void testGlobalAllocations()
+    {
+        MemoryPool testPool = new MemoryPool(DataSize.ofBytes(1000));
+
+        assertThat(testPool.tryReserveConnectorMemory(999)).isTrue();
+        assertThat(testPool.tryReserveConnectorMemory(2)).isFalse();
+        assertThat(testPool.getReservedBytes()).isEqualTo(999);
+        assertThat(testPool.getConnectorsReservedBytes()).isEqualTo(999);
+        assertThat(testPool.getReservedRevocableBytes()).isEqualTo(0);
+        assertThat(testPool.getTaskMemoryReservations()).isEmpty();
+        assertThat(testPool.getQueryMemoryReservations()).isEmpty();
+        assertThat(testPool.getTaggedMemoryAllocations()).isEmpty();
+
+        testPool.freeConnectorMemory(999);
+        assertThat(testPool.getReservedBytes()).isEqualTo(0);
+        assertThat(testPool.getConnectorsReservedBytes()).isEqualTo(0);
     }
 
     @Test

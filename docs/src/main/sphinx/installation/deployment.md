@@ -1,11 +1,9 @@
 # Deploying Trino
 
 (requirements)=
-
 ## Requirements
 
 (requirements-linux)=
-
 ### Linux operating system
 
 - 64-bit required
@@ -32,24 +30,17 @@
 % These values are used in core/trino-server-rpm/src/main/resources/dist/etc/init.d/trino
 
 (requirements-java)=
-
 ### Java runtime environment
 
-Trino requires a 64-bit version of Java 22, with a minimum required version of 22.0.0.
-Earlier  versions such as Java 8, Java 11, Java 17 or Java 21 do not work.
-Newer versions such as Java 23 are not supported -- they may work, but are not tested.
+Trino requires a 64-bit version of Java 23, with a minimum required version of
+23.0.0 and a recommendation to use the latest patch version. Earlier versions
+such as Java 8, Java 11, Java 17, Java 21 or Java 22 do not work. 
+Newer versions such as Java 24 are not supported -- they may work, but are not tested.
 
 We recommend using the Eclipse Temurin OpenJDK distribution from
 [Adoptium](https://adoptium.net/) as the JDK for Trino, as Trino is tested
 against that distribution. Eclipse Temurin is also the JDK used by the [Trino
 Docker image](https://hub.docker.com/r/trinodb/trino).
-
-(requirements-python)=
-
-### Python
-
-- version 2.6.x, 2.7.x, or 3.x
-- required by the `bin/launcher` script only
 
 ## Installing Trino
 
@@ -82,7 +73,6 @@ This holds the following configuration:
   in the respective connector documentation.
 
 (node-properties)=
-
 ### Node properties
 
 The node properties file, `etc/node.properties`, contains configuration
@@ -115,7 +105,6 @@ The above properties are described below:
   logs and other data here.
 
 (jvm-config)=
-
 ### JVM config
 
 The JVM config file, `etc/jvm.config`, contains a list of command line
@@ -167,15 +156,20 @@ Because an `OutOfMemoryError` typically leaves the JVM in an
 inconsistent state, we write a heap dump, for debugging, and forcibly
 terminate the process when this occurs.
 
-The temporary directory used by the JVM must allow execution of code.
-Specifically, the mount must not have the `noexec` flag set. The default
-`/tmp` directory is mounted with this flag in some installations, which
-prevents Trino from starting. You can workaround this by overriding the
-temporary directory by adding `-Djava.io.tmpdir=/path/to/other/tmpdir` to the
-list of JVM options.
+(tmp-directory)=
+#### Temporary directory
+
+The temporary directory used by the JVM must allow execution of code, because
+Trino accesses and uses shared library binaries for purposes such as
+[](file-compression).
+
+Specifically, the partition mount and directory must not have the `noexec` flag
+set. The default `/tmp` directory is mounted with this flag in some operating
+system installations, which prevents Trino from starting. You can work around
+this by overriding the temporary directory by adding
+`-Djava.io.tmpdir=/path/to/other/tmpdir` to the list of JVM options.
 
 (config-properties)=
-
 ### Config properties
 
 The config properties file, `etc/config.properties`, contains the
@@ -224,8 +218,8 @@ These properties require some explanation:
   available for the critical task of scheduling, managing and monitoring
   query execution.
 - `http-server.http.port`:
-  Specifies the port for the HTTP server. Trino uses HTTP for all
-  communication, internal and external.
+  Specifies the port for the [HTTP server](/admin/properties-http-server).
+  Trino uses HTTP for all communication, internal and external.
 - `discovery.uri`:
   The Trino coordinator has a discovery service that is used by all the nodes
   to find each other. Every Trino instance registers itself with the discovery
@@ -248,7 +242,6 @@ properties for topics such as {doc}`/admin/properties-general`,
 {doc}`/admin/properties-web-interface`, and others.
 
 (log-levels)=
-
 ### Log levels
 
 The optional log levels file, `etc/log.properties`, allows setting the
@@ -268,15 +261,17 @@ thus the above example does not actually change anything.
 There are four levels: `DEBUG`, `INFO`, `WARN` and `ERROR`.
 
 (catalog-properties)=
-
 ### Catalog properties
 
-Trino accesses data via *connectors*, which are mounted in catalogs.
-The connector provides all of the schemas and tables inside of the catalog.
-For example, the Hive connector maps each Hive database to a schema.
-If the Hive connector is mounted as the `hive` catalog, and Hive
-contains a table `clicks` in database `web`, that table can be accessed
-in Trino as `hive.web.clicks`.
+Trino accesses data in a [data source](trino-concept-data-source) with a
+[connector](trino-concept-connector), which is configured in a
+[catalog](trino-concept-catalog). The connector provides all of the schemas and
+tables inside of the catalog.
+
+For example, the Hive connector maps each Hive database to a schema. If the Hive
+connector is configured in the `example` catalog, and Hive contains a table
+`clicks` in the database `web`, that table can be accessed in Trino as
+`example.web.clicks`.
 
 Catalogs are registered by creating a catalog properties file
 in the `etc/catalog` directory.
@@ -287,15 +282,13 @@ contents to mount the `jmx` connector as the `jmx` catalog:
 connector.name=jmx
 ```
 
-See {doc}`/connector` for more information about configuring connectors.
+See {doc}`/connector` for more information about configuring catalogs.
 
 (running-trino)=
-
 ## Running Trino
 
-The installation provides a `bin/launcher` script, which requires Python in
-the `PATH`. The script can be used manually or as a daemon startup script. It
-accepts the following commands:
+The installation provides a `bin/launcher` script that can be used manually 
+or as a daemon startup script. It accepts the following commands:
 
 :::{list-table} `launcher` commands
 :widths: 15, 85

@@ -27,6 +27,7 @@ import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.NodeState;
 import io.trino.security.AccessControl;
 import io.trino.server.ForWorkerInfo;
+import io.trino.server.GoneException;
 import io.trino.server.HttpRequestSessionContextFactory;
 import io.trino.server.security.ResourceSecurity;
 import io.trino.spi.Node;
@@ -35,13 +36,12 @@ import io.trino.spi.security.AccessDeniedException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.ws.rs.ForbiddenException;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
-import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.Response.Status;
 
 import java.io.IOException;
 import java.util.HashSet;
@@ -59,10 +59,10 @@ import static io.trino.security.AccessControlUtil.checkCanViewQueryOwnedBy;
 import static io.trino.server.security.ResourceSecurity.AccessType.WEB_UI;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON;
 import static jakarta.ws.rs.core.MediaType.APPLICATION_JSON_TYPE;
-import static jakarta.ws.rs.core.Response.Status.NOT_FOUND;
 import static java.util.Objects.requireNonNull;
 
 @Path("/ui/api/worker")
+@ResourceSecurity(WEB_UI)
 public class WorkerResource
 {
     private final DispatchManager dispatchManager;
@@ -86,7 +86,6 @@ public class WorkerResource
         this.sessionContextFactory = requireNonNull(sessionContextFactory, "sessionContextFactory is null");
     }
 
-    @ResourceSecurity(WEB_UI)
     @GET
     @Path("{nodeId}/status")
     public Response getStatus(@PathParam("nodeId") String nodeId)
@@ -94,7 +93,6 @@ public class WorkerResource
         return proxyJsonResponse(nodeId, "v1/status");
     }
 
-    @ResourceSecurity(WEB_UI)
     @GET
     @Path("{nodeId}/thread")
     public Response getThreads(@PathParam("nodeId") String nodeId)
@@ -102,7 +100,6 @@ public class WorkerResource
         return proxyJsonResponse(nodeId, "v1/thread");
     }
 
-    @ResourceSecurity(WEB_UI)
     @GET
     @Path("{nodeId}/task/{taskId}")
     public Response getThreads(
@@ -122,10 +119,9 @@ public class WorkerResource
                 throw new ForbiddenException();
             }
         }
-        return Response.status(Status.GONE).build();
+        throw new GoneException();
     }
 
-    @ResourceSecurity(WEB_UI)
     @GET
     public Response getWorkerList()
     {
@@ -202,7 +198,7 @@ public class WorkerResource
         InternalNode node = nodes.stream()
                 .filter(n -> n.getNodeIdentifier().equals(nodeId))
                 .findFirst()
-                .orElseThrow(() -> new WebApplicationException(NOT_FOUND));
+                .orElseThrow(NotFoundException::new);
 
         Request request = prepareGet()
                 .setUri(uriBuilderFrom(node.getInternalUri())

@@ -692,7 +692,7 @@ public abstract class AbstractTestOracleTypeMapping
     public void testJulianGregorianDate()
     {
         // Oracle TO_DATE function returns +10 days during julian and gregorian calendar switch
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_julian_dt", "(ts date)")) {
+        try (TestTable table = newTrinoTable("test_julian_dt", "(ts date)")) {
             assertUpdate(format("INSERT INTO %s VALUES (DATE '1582-10-05')", table.getName()), 1);
             assertQuery("SELECT * FROM " + table.getName(), "VALUES TIMESTAMP '1582-10-15 00:00:00'");
         }
@@ -701,26 +701,29 @@ public abstract class AbstractTestOracleTypeMapping
     @Test
     public void testUnsupportedDate()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_unsupported_dt", "(ts date)")) {
+        try (TestTable table = newTrinoTable("test_unsupported_dt", "(ts date)")) {
             assertQueryFails(
                     format("INSERT INTO %s VALUES (DATE '-4713-12-31')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01841: (full) year must be between -4713 and +9999, and not be 0
 
-                    https://docs.oracle.com/error-help/db/ora-01841/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01841/\\E\
+                    """);
             assertQueryFails(
                     format("INSERT INTO %s VALUES (DATE '0000-01-01')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01841: (full) year must be between -4713 and +9999, and not be 0
 
-                    https://docs.oracle.com/error-help/db/ora-01841/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01841/\\E\
+                    """);
             // The error message sounds invalid date format in the connector, but it's no problem as the max year is 9999 in Oracle
             assertQueryFails(
                     format("INSERT INTO %s VALUES (DATE '10000-01-01')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01861: literal does not match format string
 
-                    https://docs.oracle.com/error-help/db/ora-01861/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01861/\\E\
+                    """);
         }
     }
 
@@ -957,7 +960,7 @@ public abstract class AbstractTestOracleTypeMapping
     public void testJulianGregorianTimestamp()
     {
         // Oracle TO_DATE function returns +10 days during julian and gregorian calendar switch
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_julian_ts", "(ts date)")) {
+        try (TestTable table = newTrinoTable("test_julian_ts", "(ts date)")) {
             assertUpdate(format("INSERT INTO %s VALUES (timestamp '1582-10-05')", table.getName()), 1);
             assertQuery("SELECT * FROM " + table.getName(), "VALUES TIMESTAMP '1582-10-15 00:00:00'");
         }
@@ -966,25 +969,28 @@ public abstract class AbstractTestOracleTypeMapping
     @Test
     public void testUnsupportedTimestamp()
     {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_unsupported_ts", "(ts timestamp)")) {
+        try (TestTable table = newTrinoTable("test_unsupported_ts", "(ts timestamp)")) {
             assertQueryFails(
                     format("INSERT INTO %s VALUES (TIMESTAMP '-4713-12-31 00:00:00.000')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01841: (full) year must be between -4713 and +9999, and not be 0
 
-                    https://docs.oracle.com/error-help/db/ora-01841/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01841/\\E\
+                    """);
             assertQueryFails(
                     format("INSERT INTO %s VALUES (TIMESTAMP '0000-01-01 00:00:00.000')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01841: (full) year must be between -4713 and +9999, and not be 0
 
-                    https://docs.oracle.com/error-help/db/ora-01841/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01841/\\E\
+                    """);
             assertQueryFails(
                     format("INSERT INTO %s VALUES (TIMESTAMP '10000-01-01 00:00:00.000')", table.getName()),
                     """
                     \\QFailed to insert data: ORA-01862: the numeric value does not match the length of the format item
 
-                    https://docs.oracle.com/error-help/db/ora-01862/\\E""");
+                    https://docs.oracle.com/error-help/db/ora-01862/\\E\
+                    """);
         }
     }
 

@@ -30,6 +30,7 @@ import org.junit.jupiter.api.parallel.Execution;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static io.trino.testing.TestingConnectorSession.SESSION;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,7 +69,7 @@ public class TestKinesisTableDescriptionSupplier
     {
         KinesisMetadata metadata = (KinesisMetadata) connector.getMetadata(SESSION, new ConnectorTransactionHandle() {});
         SchemaTableName tblName = new SchemaTableName("prod", "test_table");
-        KinesisTableHandle tableHandle = metadata.getTableHandle(SESSION, tblName);
+        KinesisTableHandle tableHandle = metadata.getTableHandle(SESSION, tblName, Optional.empty(), Optional.empty());
         assertThat(metadata).isNotNull();
         SchemaTableName tableSchemaName = tableHandle.schemaTableName();
         assertThat(tableSchemaName.getSchemaName()).isEqualTo("prod");
@@ -76,7 +77,7 @@ public class TestKinesisTableDescriptionSupplier
         assertThat(tableHandle.streamName()).isEqualTo("test_kinesis_stream");
         assertThat(tableHandle.messageDataFormat()).isEqualTo("json");
         Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(SESSION, tableHandle);
-        assertThat(columnHandles.size()).isEqualTo(14);
+        assertThat(columnHandles).hasSize(14);
         assertThat(columnHandles.values().stream().filter(x -> ((KinesisColumnHandle) x).isInternal()).count()).isEqualTo(10);
     }
 
@@ -88,10 +89,10 @@ public class TestKinesisTableDescriptionSupplier
 
         SchemaTableName tblName = new SchemaTableName("prod", "test_table");
         List<String> schemas = metadata.listSchemaNames(null);
-        assertThat(schemas.size()).isEqualTo(1);
+        assertThat(schemas).hasSize(1);
         assertThat(schemas.get(0)).isEqualTo("prod");
 
-        KinesisTableHandle tblHandle = metadata.getTableHandle(null, tblName);
+        KinesisTableHandle tblHandle = metadata.getTableHandle(null, tblName, Optional.empty(), Optional.empty());
         assertThat(tblHandle).isNotNull();
         assertThat(tblHandle.schemaName()).isEqualTo("prod");
         assertThat(tblHandle.tableName()).isEqualTo("test_table");

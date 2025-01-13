@@ -64,6 +64,11 @@ public record TaskInfo(
         return new TaskInfo(taskStatus, lastHeartbeat, outputBuffers.pruneSpoolingOutputStats(), noMoreSplits, stats, estimatedMemory, needsPlan);
     }
 
+    public TaskInfo pruneDigests()
+    {
+        return new TaskInfo(taskStatus, lastHeartbeat, outputBuffers, noMoreSplits, stats.pruneDigests(), estimatedMemory, needsPlan);
+    }
+
     @Override
     public String toString()
     {
@@ -88,6 +93,7 @@ public record TaskInfo(
                         0,
                         0,
                         pipelinedBufferStates,
+                        Optional.empty(),
                         Optional.empty(),
                         Optional.empty()),
                 ImmutableSet.of(),

@@ -133,13 +133,11 @@ class HashDistributionSplitAssigner
                     if (!subPartition.isIdAssigned()) {
                         int taskPartitionId = nextTaskPartitionId++;
                         subPartition.assignId(taskPartitionId);
-                        Set<HostAddress> hostRequirement = sourcePartitioningScheme.getNodeRequirement(sourcePartitionId)
-                                .map(InternalNode::getHostAndPort)
-                                .map(ImmutableSet::of)
-                                .orElse(ImmutableSet.of());
+                        Optional<HostAddress> hostRequirement = sourcePartitioningScheme.getNodeRequirement(sourcePartitionId)
+                                .map(InternalNode::getHostAndPort);
                         assignment.addPartition(new Partition(
                                 taskPartitionId,
-                                new NodeRequirements(catalogRequirement, hostRequirement)));
+                                new NodeRequirements(catalogRequirement, hostRequirement, hostRequirement.isEmpty())));
                         createdTaskPartitions.add(taskPartitionId);
                     }
                 }

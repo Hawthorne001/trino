@@ -13,9 +13,21 @@
  */
 package io.trino.client;
 
+import jakarta.annotation.Nullable;
+
 import java.util.List;
 
+/**
+ * Used for representing both raw JSON values and spooled metadata.
+ */
 public interface QueryData
 {
-    Iterable<List<Object>> getData();
+    @Deprecated
+    @Nullable
+    default Iterable<List<Object>> getData()
+    {
+        throw new UnsupportedOperationException("getData() is deprecated for removal, use StatementClient.currentRows() instead");
+    }
+
+    boolean isNull();
 }

@@ -39,8 +39,8 @@ import java.util.Set;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.base.util.Closables.closeAllSuppress;
-import static io.trino.plugin.hive.metastore.glue.AwsSdkUtil.getPaginatedResults;
-import static io.trino.plugin.hive.metastore.glue.converter.GlueToTrinoConverter.getTableParameters;
+import static io.trino.plugin.hive.metastore.glue.v1.AwsSdkUtil.getPaginatedResults;
+import static io.trino.plugin.hive.metastore.glue.v1.GlueToTrinoConverter.getTableParameters;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static org.apache.iceberg.BaseMetastoreTableOperations.METADATA_LOCATION_PROP;
 
@@ -62,7 +62,8 @@ public class TestIcebergGlueCatalogMaterializedView
                 .setIcebergProperties(
                         ImmutableMap.of(
                                 "iceberg.catalog.type", "glue",
-                                "hive.metastore.glue.default-warehouse-dir", schemaDirectory.getAbsolutePath()))
+                                "hive.metastore.glue.default-warehouse-dir", schemaDirectory.getAbsolutePath(),
+                                "fs.hadoop.enabled", "true"))
                 .setSchemaInitializer(
                         SchemaInitializer.builder()
                                 .withClonedTpchTables(ImmutableList.of())
@@ -73,7 +74,8 @@ public class TestIcebergGlueCatalogMaterializedView
             queryRunner.createCatalog("iceberg_legacy_mv", "iceberg", Map.of(
                     "iceberg.catalog.type", "glue",
                     "hive.metastore.glue.default-warehouse-dir", schemaDirectory.getAbsolutePath(),
-                    "iceberg.materialized-views.hide-storage-table", "false"));
+                    "iceberg.materialized-views.hide-storage-table", "false",
+                    "fs.hadoop.enabled", "true"));
 
             queryRunner.installPlugin(createMockConnectorPlugin());
             queryRunner.createCatalog("mock", "mock");

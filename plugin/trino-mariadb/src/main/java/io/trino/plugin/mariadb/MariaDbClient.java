@@ -29,6 +29,7 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcJoinCondition;
+import io.trino.plugin.jdbc.JdbcMetadata;
 import io.trino.plugin.jdbc.JdbcSortItem;
 import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -187,7 +188,7 @@ public class MariaDbClient
             IdentifierMapping identifierMapping,
             RemoteQueryModifier queryModifier)
     {
-        super("`", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, false);
+        super("`", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, true);
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
@@ -307,6 +308,19 @@ public class MariaDbClient
                 null,
                 escapeObjectNameForMetadataQuery(tableName, metadata.getSearchStringEscape()).orElse(null),
                 getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
+    }
+
+    @Override
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        // MariaDB maps their "database" to SQL catalogs and does not have schemas
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getColumns(
+                remoteSchemaName.orElse(null),
+                null,
+                null,
+                null);
     }
 
     @Override
@@ -670,7 +684,7 @@ public class MariaDbClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in MariaDB
             return false;
         }
@@ -742,7 +756,7 @@ public class MariaDbClient
                 return tableStatistics.build();
             }
 
-            for (JdbcColumnHandle column : getColumns(session, table)) {
+            for (JdbcColumnHandle column : JdbcMetadata.getColumns(session, this, table)) {
                 ColumnStatistics.Builder columnStatisticsBuilder = ColumnStatistics.builder();
 
                 String columnName = column.getColumnName();
@@ -817,11 +831,12 @@ public class MariaDbClient
         Long getTableRowCount(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                        SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES
-                        WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                        AND TABLE_TYPE = 'BASE TABLE'
-                        """)
+            return handle.createQuery(
+                            """
+                            SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES
+                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                            AND TABLE_TYPE = 'BASE TABLE'
+                            """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
                     .mapTo(Long.class)
@@ -832,10 +847,11 @@ public class MariaDbClient
         Long getTableMaxColumnIndexCardinality(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                        SELECT max(CARDINALITY) AS row_count FROM INFORMATION_SCHEMA.STATISTICS
-                        WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                        """)
+            return handle.createQuery(
+                            """
+                            SELECT max(CARDINALITY) AS row_count FROM INFORMATION_SCHEMA.STATISTICS
+                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                            """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
                     .mapTo(Long.class)
@@ -846,7 +862,8 @@ public class MariaDbClient
         Map<String, AnalyzeColumnStatistics> getColumnStatistics(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
+            return handle.createQuery(
+                            """
                                 SELECT
                                     column_name,
                                     -- TODO min_value, max_value,
@@ -868,18 +885,19 @@ public class MariaDbClient
         Map<String, ColumnIndexStatistics> getColumnIndexStatistics(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                                SELECT
-                                    COLUMN_NAME,
-                                    MAX(NULLABLE) AS NULLABLE,
-                                    MAX(CARDINALITY) AS CARDINALITY
-                                FROM INFORMATION_SCHEMA.STATISTICS
-                                WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                                AND SEQ_IN_INDEX = 1 -- first column in the index
-                                AND SUB_PART IS NULL -- ignore cases where only a column prefix is indexed
-                                AND CARDINALITY IS NOT NULL -- CARDINALITY might be null (https://stackoverflow.com/a/42242729/65458)
-                                AND CARDINALITY != 0 -- CARDINALITY is initially 0 until analyzed
-                                GROUP BY COLUMN_NAME -- there might be multiple indexes on a column
+            return handle.createQuery(
+                            """
+                            SELECT
+                                COLUMN_NAME,
+                                MAX(NULLABLE) AS NULLABLE,
+                                MAX(CARDINALITY) AS CARDINALITY
+                            FROM INFORMATION_SCHEMA.STATISTICS
+                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                            AND SEQ_IN_INDEX = 1 -- first column in the index
+                            AND SUB_PART IS NULL -- ignore cases where only a column prefix is indexed
+                            AND CARDINALITY IS NOT NULL -- CARDINALITY might be null (https://stackoverflow.com/a/42242729/65458)
+                            AND CARDINALITY != 0 -- CARDINALITY is initially 0 until analyzed
+                            GROUP BY COLUMN_NAME -- there might be multiple indexes on a column
                             """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
@@ -900,5 +918,5 @@ public class MariaDbClient
 
     private record AnalyzeColumnStatistics(double nullsRatio) {}
 
-    private record ColumnIndexStatistics(boolean nullable, long cardinality) {}
+    private record ColumnIndexStatistics(boolean nullable, long cardinality) { }
 }

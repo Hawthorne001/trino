@@ -165,6 +165,13 @@ public final class ArrayBlock
         consumer.accept(this, INSTANCE_SIZE);
     }
 
+    public Block getElementsBlock()
+    {
+        int start = offsets[arrayOffset];
+        int end = offsets[arrayOffset + positionCount];
+        return values.getRegion(start, end - start);
+    }
+
     Block getRawElementBlock()
     {
         return values;
@@ -414,6 +421,12 @@ public final class ArrayBlock
     public ArrayBlock getUnderlyingValueBlock()
     {
         return this;
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     public <T> T apply(ArrayBlockFunction<T> function, int position)

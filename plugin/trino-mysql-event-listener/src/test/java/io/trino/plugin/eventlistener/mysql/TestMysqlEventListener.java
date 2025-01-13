@@ -16,6 +16,7 @@ package io.trino.plugin.eventlistener.mysql;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.reflect.TypeToken;
 import io.airlift.json.JsonCodecFactory;
+import io.trino.plugin.base.evenlistener.TestingEventListenerContext;
 import io.trino.spi.TrinoWarning;
 import io.trino.spi.connector.CatalogHandle.CatalogVersion;
 import io.trino.spi.connector.StandardWarningCode;
@@ -66,11 +67,12 @@ import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
 @TestInstance(PER_CLASS)
 @Execution(CONCURRENT)
-public class TestMysqlEventListener
+final class TestMysqlEventListener
 {
     private static final QueryMetadata FULL_QUERY_METADATA = new QueryMetadata(
             "full_query",
             Optional.of("transactionId"),
+            Optional.of("encoding"),
             "query",
             Optional.of("updateType"),
             Optional.of("preparedQuery"),
@@ -95,6 +97,7 @@ public class TestMysqlEventListener
             Optional.of(ofMillis(108)),
             Optional.of(ofMillis(109)),
             Optional.of(ofMillis(1091)),
+            Optional.of(ofMillis(1092)),
             Optional.of(ofMillis(110)),
             Optional.of(ofMillis(111)),
             Optional.of(ofMillis(112)),
@@ -123,6 +126,8 @@ public class TestMysqlEventListener
             Collections.emptyList(),
             130,
             true,
+            // not stored
+            Collections.emptyList(),
             // not stored
             Collections.emptyList(),
             // not stored
@@ -230,6 +235,7 @@ public class TestMysqlEventListener
     private static final QueryMetadata MINIMAL_QUERY_METADATA = new QueryMetadata(
             "minimal_query",
             Optional.empty(),
+            Optional.empty(),
             "query",
             Optional.empty(),
             Optional.empty(),
@@ -248,6 +254,7 @@ public class TestMysqlEventListener
             ofMillis(102),
             ofMillis(103),
             ofMillis(104),
+            Optional.empty(),
             Optional.empty(),
             Optional.empty(),
             Optional.empty(),
@@ -282,6 +289,8 @@ public class TestMysqlEventListener
             Collections.emptyList(),
             130,
             false,
+            // not stored
+            Collections.emptyList(),
             // not stored
             Collections.emptyList(),
             // not stored
@@ -339,18 +348,18 @@ public class TestMysqlEventListener
     private JsonCodecFactory jsonCodecFactory;
 
     @BeforeAll
-    public void setup()
+    void setup()
     {
         mysqlContainer = new MySQLContainer<>("mysql:8.0.36");
         mysqlContainer.start();
         mysqlContainerUrl = getJdbcUrl(mysqlContainer);
         eventListener = new MysqlEventListenerFactory()
-                .create(Map.of("mysql-event-listener.db.url", mysqlContainerUrl));
+                .create(Map.of("mysql-event-listener.db.url", mysqlContainerUrl), new TestingEventListenerContext());
         jsonCodecFactory = new JsonCodecFactory();
     }
 
     @AfterAll
-    public void teardown()
+    void teardown()
     {
         if (mysqlContainer != null) {
             mysqlContainer.close();
@@ -370,7 +379,7 @@ public class TestMysqlEventListener
     }
 
     @Test
-    public void testFull()
+    void testFull()
             throws SQLException
     {
         eventListener.queryCompleted(FULL_QUERY_COMPLETED_EVENT);
@@ -424,6 +433,7 @@ public class TestMysqlEventListener
                     assertThat(resultSet.getLong("analysis_time_millis")).isEqualTo(108);
                     assertThat(resultSet.getLong("planning_time_millis")).isEqualTo(109);
                     assertThat(resultSet.getLong("planning_cpu_time_millis")).isEqualTo(1091);
+                    assertThat(resultSet.getLong("starting_time_millis")).isEqualTo(1092);
                     assertThat(resultSet.getLong("execution_time_millis")).isEqualTo(110);
                     assertThat(resultSet.getLong("input_blocked_time_millis")).isEqualTo(111);
                     assertThat(resultSet.getLong("failed_input_blocked_time_millis")).isEqualTo(112);
@@ -454,7 +464,7 @@ public class TestMysqlEventListener
     }
 
     @Test
-    public void testMinimal()
+    void testMinimal()
             throws SQLException
     {
         eventListener.queryCompleted(MINIMAL_QUERY_COMPLETED_EVENT);

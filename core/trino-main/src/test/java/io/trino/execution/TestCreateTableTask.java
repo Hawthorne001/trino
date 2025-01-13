@@ -111,12 +111,12 @@ class TestCreateTableTask
                 .build());
         metadata = new MockMetadata();
         queryRunner.installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
-                .withMetadataWrapper(ignored -> metadata)
+                .withMetadataWrapper(_ -> metadata)
                 .withTableProperties(() -> ImmutableList.of(stringProperty("baz", "test property", null, false)))
                 .withCapabilities(() -> ImmutableSet.of(ConnectorCapabilities.NOT_NULL_COLUMN_CONSTRAINT))
                 .build()));
         queryRunner.installPlugin(new MockConnectorPlugin(MockConnectorFactory.builder()
-                .withMetadataWrapper(ignored -> metadata)
+                .withMetadataWrapper(_ -> metadata)
                 .withName("other_mock")
                 .build()));
 
@@ -222,7 +222,7 @@ class TestCreateTableTask
             getFutureValue(createTableTask.internalExecute(statement, transactionSession, emptyList(), output -> {}));
             assertThat(metadata.getCreateTableCallCount()).isEqualTo(1);
             List<ColumnMetadata> columns = metadata.getReceivedTableMetadata().get(0).getColumns();
-            assertThat(columns.size()).isEqualTo(3);
+            assertThat(columns).hasSize(3);
 
             assertThat(columns.get(0).getName()).isEqualTo("a");
             assertThat(columns.get(0).getType().getDisplayName().toUpperCase(ROOT)).isEqualTo("DATE");
