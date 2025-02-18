@@ -72,6 +72,7 @@ import javax.net.ssl.SSLContext;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -203,7 +204,7 @@ public class OpenSearchClient
                         .map(httpHost -> new HttpHost(httpHost, config.getPort(), config.isTlsEnabled() ? "https" : "http"))
                         .toArray(HttpHost[]::new));
 
-        builder.setHttpClientConfigCallback(ignored -> {
+        builder.setHttpClientConfigCallback(_ -> {
             RequestConfig requestConfig = RequestConfig.custom()
                     .setConnectTimeout(toIntExact(config.getConnectTimeout().toMillis()))
                     .setSocketTimeout(toIntExact(config.getRequestTimeout().toMillis()))
@@ -392,7 +393,7 @@ public class OpenSearchClient
                     if (docsCount == 0 && deletedDocsCount == 0) {
                         try {
                             // without documents, the index won't have any dynamic mappings, but maybe there are some explicit ones
-                            if (getIndexMetadata(index).getSchema().getFields().isEmpty()) {
+                            if (getIndexMetadata(index).schema().fields().isEmpty()) {
                                 continue;
                             }
                         }
@@ -667,7 +668,7 @@ public class OpenSearchClient
                                 "GET",
                                 format("/%s/_count?preference=_shards:%s", index, shard),
                                 ImmutableMap.of(),
-                                new StringEntity(sourceBuilder.toString()),
+                                new StringEntity(sourceBuilder.toString(), UTF_8),
                                 new BasicHeader("Content-Type", "application/json"));
             }
             catch (ResponseException e) {
@@ -678,7 +679,7 @@ public class OpenSearchClient
             }
 
             try {
-                return COUNT_RESPONSE_CODEC.fromJson(EntityUtils.toByteArray(response.getEntity()))
+                return COUNT_RESPONSE_CODEC.fromJson(response.getEntity().getContent())
                         .getCount();
             }
             catch (IOException e) {
@@ -743,15 +744,12 @@ public class OpenSearchClient
             throw new TrinoException(OPENSEARCH_CONNECTION_ERROR, e);
         }
 
-        String body;
-        try {
-            body = EntityUtils.toString(response.getEntity());
+        try (InputStream stream = response.getEntity().getContent()) {
+            return handler.process(stream);
         }
         catch (IOException e) {
             throw new TrinoException(OPENSEARCH_INVALID_RESPONSE, e);
         }
-
-        return handler.process(body);
     }
 
     private static TrinoException propagate(ResponseException exception)
@@ -801,6 +799,6 @@ public class OpenSearchClient
 
     private interface ResponseHandler<T>
     {
-        T process(String body);
+        T process(InputStream inputStream);
     }
 }

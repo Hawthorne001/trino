@@ -54,10 +54,10 @@ import static java.util.Arrays.asList;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MINUTES;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.parallel.ExecutionMode.SAME_THREAD;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 import static org.testcontainers.containers.wait.strategy.Wait.forLogMessage;
 
-@Execution(SAME_THREAD)
+@Execution(CONCURRENT)
 public class ServerIT
 {
     private static final DockerImageName BASE_IMAGE = DockerImageName.parse("registry.access.redhat.com/ubi9/ubi-minimal:latest");
@@ -75,15 +75,16 @@ public class ServerIT
             throws Exception
     {
         // Release names as in the https://api.adoptium.net/q/swagger-ui/#/Release%20Info/getReleaseNames
-        testInstall("jdk-22+36", "/usr/lib/jvm/temurin-22", "22");
-        testUninstall("jdk-22+36", "/usr/lib/jvm/temurin-22");
+        testInstall("jdk-23.0.2+7", "/usr/lib/jvm/temurin-23", "23");
+        testUninstall("jdk-23.0.2+7", "/usr/lib/jvm/temurin-23");
     }
 
     private void testInstall(String temurinReleaseName, String javaHome, String expectedJavaVersion)
     {
         String rpm = "/" + new File(rpmHostPath).getName();
-        String command = """
-                microdnf install -y tar gzip python sudo shadow-utils
+        String command =
+                """
+                microdnf install -y tar gzip sudo shadow-utils
                 %s
                 rpm -i %s
                 mkdir /etc/trino/catalog
@@ -106,6 +107,9 @@ public class ServerIT
                     // the RPM is hundreds MB and file system bind is much more efficient
                     .withFileSystemBind(rpmHostPath, rpm, BindMode.READ_ONLY)
                     .withCommand("sh", "-xeuc", command)
+                    .withCreateContainerCmdModifier(modifier -> modifier
+                            .withHostConfig(modifier.getHostConfig().withInit(true)))
+                    .withEnv("JAVA_HOME", javaHome)
                     .waitingFor(forLogMessage(".*SERVER STARTED.*", 1).withStartupTimeout(Duration.ofMinutes(5)))
                     .start();
             QueryRunner queryRunner = new QueryRunner(container.getHost(), container.getMappedPort(8080));
@@ -118,13 +122,13 @@ public class ServerIT
         }
     }
 
-
     private void testUninstall(String temurinReleaseName, String javaHome)
             throws Exception
     {
         String rpm = "/" + new File(rpmHostPath).getName();
-        String installAndStartTrino = """
-                microdnf install -y tar gzip python sudo shadow-utils
+        String installAndStartTrino =
+                """
+                microdnf install -y tar gzip sudo shadow-utils
                 %s
                 rpm -i %s
                 /etc/init.d/trino start
@@ -134,9 +138,13 @@ public class ServerIT
         try (GenericContainer<?> container = new GenericContainer<>(BASE_IMAGE)) {
             container.withFileSystemBind(rpmHostPath, rpm, BindMode.READ_ONLY)
                     .withCommand("sh", "-xeuc", installAndStartTrino)
+                    .withEnv("JAVA_HOME", javaHome)
+                    .withCreateContainerCmdModifier(modifier -> modifier
+                            .withHostConfig(modifier.getHostConfig().withInit(true)))
                     .waitingFor(forLogMessage(".*SERVER STARTED.*", 1).withStartupTimeout(Duration.ofMinutes(5)))
                     .start();
-            String uninstallTrino = """
+            String uninstallTrino =
+                    """
                     /etc/init.d/trino stop
                     rpm -e trino-server-rpm
                     """;
@@ -169,7 +177,12 @@ public class ServerIT
             assertThatPaths(files)
                     .exists("/usr/lib/trino/bin")
                     .path("/usr/lib/trino/bin/launcher").isOwnerExecutable()
-                    .path("/usr/lib/trino/bin/launcher.py").isOwnerExecutable()
+                    .path("/usr/lib/trino/bin/linux-amd64/launcher").isOwnerExecutable()
+                    .path("/usr/lib/trino/bin/linux-arm64/launcher").isOwnerExecutable()
+                    .path("/usr/lib/trino/bin/linux-ppc64le/launcher").isOwnerExecutable()
+                    .exists("/usr/lib/trino/bin/linux-amd64/libprocname.so")
+                    .exists("/usr/lib/trino/bin/linux-arm64/libprocname.so")
+                    .exists("/usr/lib/trino/bin/linux-ppc64le/libprocname.so")
                     .path("/etc/init.d/trino").isOwnerExecutable()
                     .exists("/usr/lib/trino/bin/launcher.properties");
 
@@ -177,6 +190,7 @@ public class ServerIT
             assertThatPaths(files)
                     .path("/usr/lib/trino/etc").linksTo("/etc/trino")
                     .exists("/etc/trino/config.properties")
+                    .exists("/etc/trino/secrets.toml")
                     .exists("/etc/trino/jvm.config")
                     .exists("/etc/trino/env.sh")
                     .exists("/etc/trino/log.properties")
@@ -189,6 +203,11 @@ public class ServerIT
                     .exists("/usr/shared/doc/trino/README.txt")
                     // Plugins' libs are always hardlinks
                     .paths("/usr/lib/trino/plugin/[a-z_]+\\.jar", path -> {
+                        String filename = Path.of(path.getPath()).getFileName().toString();
+                        path.isLink().linksTo("../../shared/" + filename);
+                    })
+                    // secrets-plugins libs are always hardlinks
+                    .paths("/usr/lib/trino/secrets-plugin/[a-z_]+\\.jar", path -> {
                         String filename = Path.of(path.getPath()).getFileName().toString();
                         path.isLink().linksTo("../../shared/" + filename);
                     });
@@ -208,6 +227,7 @@ public class ServerIT
 
             Map<String, String> rpmMetadata = getRpmMetadata(container, rpm);
             assertThat(rpmMetadata).extractingByKey("Name").isEqualTo("trino-server-rpm");
+            assertThat(rpmMetadata).extractingByKey("Build Host").isEqualTo("localhost");
             assertThat(rpmMetadata).extractingByKey("Epoch").isEqualTo("0");
             assertThat(rpmMetadata).extractingByKey("Release").isEqualTo("1");
             assertThat(rpmMetadata).extractingByKey("Version").isEqualTo(getProjectVersion());
@@ -230,10 +250,10 @@ public class ServerIT
     private static String installJavaCommand(String temurinReleaseName, String javaHome)
     {
         return """
-                echo "Downloading JDK from %1$s"
-                mkdir -p "%2$s"
-                curl -#LfS "%1$s" | tar -zx --strip 1 -C "%2$s"
-                """.formatted(temurinDownloadLink(temurinReleaseName), javaHome);
+               echo "Downloading JDK from %1$s"
+               mkdir -p "%2$s"
+               curl -#LfS "%1$s" | tar -zx --strip 1 -C "%2$s"
+               """.formatted(temurinDownloadLink(temurinReleaseName), javaHome);
     }
 
     private static void assertPathDeleted(GenericContainer<?> container, String path)
@@ -314,19 +334,18 @@ public class ServerIT
         public Set<List<String>> execute(String sql)
         {
             try (Connection connection = getConnection(format("jdbc:trino://%s:%s", host, port), "test", null);
-                    Statement statement = connection.createStatement()) {
-                try (ResultSet resultSet = statement.executeQuery(sql)) {
-                    ImmutableSet.Builder<List<String>> rows = ImmutableSet.builder();
-                    int columnCount = resultSet.getMetaData().getColumnCount();
-                    while (resultSet.next()) {
-                        ImmutableList.Builder<String> row = ImmutableList.builder();
-                        for (int column = 1; column <= columnCount; column++) {
-                            row.add(resultSet.getString(column));
-                        }
-                        rows.add(row.build());
+                    Statement statement = connection.createStatement();
+                    ResultSet resultSet = statement.executeQuery(sql)) {
+                ImmutableSet.Builder<List<String>> rows = ImmutableSet.builder();
+                int columnCount = resultSet.getMetaData().getColumnCount();
+                while (resultSet.next()) {
+                    ImmutableList.Builder<String> row = ImmutableList.builder();
+                    for (int column = 1; column <= columnCount; column++) {
+                        row.add(resultSet.getString(column));
                     }
-                    return rows.build();
+                    rows.add(row.build());
                 }
+                return rows.build();
             }
             catch (SQLException e) {
                 throw new RuntimeException(e);
@@ -334,7 +353,7 @@ public class ServerIT
         }
     }
 
-    record PathInfo(String path, Set<PosixFilePermission> permissions, String owner, String group, Optional<String> link) {}
+    record PathInfo(String path, Set<PosixFilePermission> permissions, String owner, String group, Optional<String> link) { }
 
     static class PathInfoAssert
             extends AbstractAssert<PathInfoAssert, PathInfo>
@@ -359,14 +378,6 @@ public class ServerIT
         {
             if (!actual.permissions.contains(OWNER_EXECUTE)) {
                 failWithMessage("Expected %s to be owner executable", actual.path);
-            }
-            return this;
-        }
-
-        public PathInfoAssert isNotOwnerExecutable()
-        {
-            if (actual.permissions.contains(OWNER_EXECUTE)) {
-                failWithMessage("Expected %s not to be executable", actual.path);
             }
             return this;
         }

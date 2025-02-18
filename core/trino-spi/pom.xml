@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>447-SNAPSHOT</version>
+        <version>471-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -13,7 +13,6 @@
     <description>Trino - Service Provider Interface (SPI)</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
         <released-artifacts.dir>${project.build.directory}/released-artifacts</released-artifacts.dir>
         <trino.check.skip-revapi>${air.check.skip-basic}</trino.check.skip-revapi>
     </properties>
@@ -45,6 +44,12 @@
             <groupId>jakarta.annotation</groupId>
             <artifactId>jakarta.annotation-api</artifactId>
             <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
+            <scope>runtime</scope>
         </dependency>
 
         <dependency>
@@ -215,19 +220,93 @@
                                 <!-- Any exclusions below can be deleted after each release -->
                                 <item>
                                     <ignore>true</ignore>
-                                    <code>java.class.nowFinal</code>
-                                    <old>class io.trino.spi.connector.ConnectorTableLayout</old>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.ArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
                                 </item>
                                 <item>
                                     <ignore>true</ignore>
-                                    <code>java.class.removed</code>
-                                    <old>@interface io.trino.spi.function.RemoveInputFunction</old>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.Block::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
                                 </item>
                                 <item>
                                     <ignore>true</ignore>
-                                    <code>java.method.numberOfParametersChanged</code>
-                                    <old>method void io.trino.spi.eventlistener.QueryStatistics::&lt;init&gt;(java.time.Duration, java.time.Duration, java.time.Duration, java.time.Duration, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, double, double, java.util.List&lt;io.trino.spi.eventlistener.StageGcStatistics&gt;, int, boolean, java.util.List&lt;io.trino.spi.eventlistener.StageCpuDistribution&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferUtilization&gt;, java.util.function.Supplier&lt;java.util.List&lt;java.lang.String&gt;&gt;, java.util.List&lt;io.trino.spi.eventlistener.QueryPlanOptimizerStatistics&gt;, java.util.Optional&lt;java.lang.String&gt;)</old>
-                                    <new>method void io.trino.spi.eventlistener.QueryStatistics::&lt;init&gt;(java.time.Duration, java.time.Duration, java.time.Duration, java.time.Duration, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, java.util.Optional&lt;java.time.Duration&gt;, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, long, double, double, java.util.List&lt;io.trino.spi.eventlistener.StageGcStatistics&gt;, int, boolean, java.util.List&lt;io.trino.spi.eventlistener.StageCpuDistribution&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageOutputBufferUtilization&gt;, java.util.List&lt;io.trino.spi.eventlistener.StageTaskStatistics&gt;, java.util.function.Supplier&lt;java.util.List&lt;java.lang.String&gt;&gt;, java.util.List&lt;io.trino.spi.eventlistener.QueryPlanOptimizerStatistics&gt;, java.util.Optional&lt;java.lang.String&gt;)</new>
+                                    <code>java.method.addedToInterface</code>
+                                    <new>method java.lang.Class&lt;? extends io.trino.spi.block.Block&gt; io.trino.spi.block.BlockEncoding::getBlockClass()</new>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.ByteArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.DictionaryBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.Fixed12Block::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.Int128ArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.IntArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.LazyBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.LongArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.MapBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.RowBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.RunLengthEncodedBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.ShortArrayBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
+                                </item>
+                                <item>
+                                    <ignore>true</ignore>
+                                    <code>java.method.removed</code>
+                                    <old>method java.lang.String io.trino.spi.block.VariableWidthBlock::getEncodingName()</old>
+                                    <justification>Removal of bidrectional coupling of Blocks and BlockEncodings</justification>
                                 </item>
                             </differences>
                         </revapi.differences>

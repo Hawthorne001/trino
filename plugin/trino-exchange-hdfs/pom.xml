@@ -4,7 +4,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>447-SNAPSHOT</version>
+        <version>471-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -13,7 +13,7 @@
     <description>Trino - Exchange HDFS</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
     </properties>
 
     <dependencies>
@@ -88,6 +88,12 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api-incubator</artifactId>
             <scope>provided</scope>
         </dependency>
 

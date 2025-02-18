@@ -13,9 +13,13 @@
  */
 package io.trino.client;
 
-import java.util.List;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
+/**
+ * Used for representing both raw JSON values and spooled metadata.
+ */
 public interface QueryData
 {
-    Iterable<List<Object>> getData();
+    @JsonIgnore
+    boolean isNull();
 }

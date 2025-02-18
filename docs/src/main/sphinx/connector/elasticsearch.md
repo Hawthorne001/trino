@@ -138,7 +138,7 @@ clusters with TLS enabled.
 
 If your cluster has globally-trusted certificates, you should only need to
 enable TLS. If you require custom configuration for certificates, the connector
-supports key stores and trust stores in PEM or Java Key Store (JKS) format.
+supports key stores and trust stores in P12 (PKCS) or Java Key Store (JKS) format.
 
 The available configuration values are listed in the following table:
 
@@ -151,10 +151,10 @@ The available configuration values are listed in the following table:
 * - `elasticsearch.tls.enabled`
   - Enables TLS security.
 * - `elasticsearch.tls.keystore-path`
-  - The path to the [PEM](/security/inspect-pem) or [JKS](/security/inspect-jks)
+  - The path to the P12 (PKCS) or [JKS](/security/inspect-jks)
     key store.
 * - `elasticsearch.tls.truststore-path`
-  - The path to [PEM](/security/inspect-pem) or [JKS](/security/inspect-jks)
+  - The path to P12 (PKCS) or [JKS](/security/inspect-jks)
     trust store.
 * - `elasticsearch.tls.keystore-password`
   - The key password for the key store specified by
@@ -223,7 +223,6 @@ according to the following table:
 No other types are supported.
 
 (elasticsearch-array-types)=
-
 ### Array types
 
 Fields in Elasticsearch can contain [zero or more
@@ -404,13 +403,13 @@ The connector provides [globally available](sql-globally-available) and [read
 operation](sql-read-operations) statements to access data and metadata in the
 Elasticsearch catalog.
 
-## Table functions
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Elasticsearch.
 
 (elasticsearch-raw-query-function)=
-### `raw_query(varchar) -> table`
+#### `raw_query(varchar) -> table`
 
 The `raw_query` function allows you to query the underlying database directly.
 This function requires [Elastic Query

@@ -20,7 +20,12 @@ import com.google.common.io.Resources;
 import io.opentelemetry.sdk.trace.data.SpanData;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HiveMetastoreFactory;
+import io.trino.metastore.Table;
+import io.trino.plugin.deltalake.metastore.DeltaLakeTableMetadataScheduler;
 import io.trino.testing.AbstractTestQueryFramework;
+import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import org.intellij.lang.annotations.Language;
 import org.junit.jupiter.api.Test;
@@ -29,28 +34,34 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.io.File;
 import java.net.URI;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
+import static com.google.common.collect.Maps.filterKeys;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static io.trino.filesystem.tracing.FileSystemAttributes.FILE_LOCATION;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.CDF_DATA;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.CHECKPOINT;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.DATA;
+import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.DELETION_VECTOR;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.LAST_CHECKPOINT;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.STARBURST_EXTENDED_STATS_JSON;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.TRANSACTION_LOG_JSON;
 import static io.trino.plugin.deltalake.TestDeltaLakeFileOperations.FileType.TRINO_EXTENDED_STATS_JSON;
 import static io.trino.plugin.deltalake.TestingDeltaLakeUtils.copyDirectoryContents;
+import static io.trino.plugin.hive.metastore.MetastoreUtil.buildInitialPrivilegeSet;
 import static io.trino.testing.MultisetAssertions.assertMultisetsEqual;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.Math.toIntExact;
+import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toCollection;
 
@@ -61,6 +72,10 @@ public class TestDeltaLakeFileOperations
 {
     private static final int MAX_PREFIXES_COUNT = 10;
 
+    private HiveMetastore metastore;
+    // TODO: Consider waiting for scheduled task completion instead of manual triggering
+    private DeltaLakeTableMetadataScheduler metadataScheduler;
+
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
@@ -68,12 +83,18 @@ public class TestDeltaLakeFileOperations
         Path catalogDir = Files.createTempDirectory("catalog-dir");
         closeAfterClass(() -> deleteRecursively(catalogDir, ALLOW_INSECURE));
 
-        return DeltaLakeQueryRunner.builder()
+        DistributedQueryRunner queryRunner = DeltaLakeQueryRunner.builder()
                 .addCoordinatorProperty("optimizer.experimental-max-prefetched-information-schema-prefixes", Integer.toString(MAX_PREFIXES_COUNT))
                 .addDeltaProperty("hive.metastore.catalog.dir", catalogDir.toUri().toString())
                 .addDeltaProperty("delta.enable-non-concurrent-writes", "true")
                 .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .addDeltaProperty("delta.metastore.store-table-metadata", "true")
+                .addDeltaProperty("delta.metastore.store-table-metadata-threads", "0") // Use the same thread to make the test deterministic
+                .addDeltaProperty("delta.metastore.store-table-metadata-interval", "30m") // Use a large interval to avoid interference with the test
                 .build();
+        metastore = TestingDeltaLakeUtils.getConnectorService(queryRunner, HiveMetastoreFactory.class).createMetastore(Optional.empty());
+        metadataScheduler = TestingDeltaLakeUtils.getConnectorService(queryRunner, DeltaLakeTableMetadataScheduler.class);
+        return queryRunner;
     }
 
     @Test
@@ -116,8 +137,9 @@ public class TestDeltaLakeFileOperations
         assertFileSystemAccesses("CREATE OR REPLACE TABLE test_create_or_replace (id VARCHAR, age INT)",
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "OutputFile.createOrOverwrite"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.exists"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
@@ -146,8 +168,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "OutputFile.createOrOverwrite"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "OutputFile.createOrOverwrite"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(DATA, "no partition", "OutputFile.create"))
@@ -175,7 +198,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 2)
                         .build());
 
@@ -188,7 +214,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 2)
                         .build());
@@ -212,7 +241,7 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000002.checkpoint.parquet", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000002.checkpoint.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 2)
                         .build());
 
@@ -235,7 +264,7 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000002.checkpoint.parquet", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000002.checkpoint.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "key=p1/", "InputFile.newInput"), 2)
                         .addCopies(new FileOperation(DATA, "key=p2/", "InputFile.newInput"), 2)
                         .build());
@@ -262,7 +291,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "key=p1/", "InputFile.newInput"), 2)
                         .addCopies(new FileOperation(DATA, "key=p2/", "InputFile.newInput"), 2)
                         .build());
@@ -276,7 +308,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .addCopies(new FileOperation(DATA, "key=p1/", "InputFile.newInput"), 2)
                         .addCopies(new FileOperation(DATA, "key=p2/", "InputFile.newInput"), 2)
@@ -291,7 +326,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .build());
 
@@ -304,7 +342,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .build());
 
         // Read partition and synthetic columns
@@ -316,7 +357,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .build());
 
@@ -329,7 +373,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .build());
 
         assertUpdate("DROP TABLE test_read_part_key");
@@ -362,7 +409,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .build());
 
@@ -375,7 +424,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
                         .build());
 
         assertUpdate("DROP TABLE test_read_whole_splittable_file");
@@ -396,7 +447,8 @@ public class TestDeltaLakeFileOperations
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
                         .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 2)
                         .build());
@@ -417,6 +469,7 @@ public class TestDeltaLakeFileOperations
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"))
                         .build());
         assertFileSystemAccesses("SELECT * FROM " + tableName + " FOR VERSION AS OF 1",
@@ -424,6 +477,8 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"))
                         .add(new FileOperation(DATA, "no partition", "InputFile.newInput"))
                         .build());
@@ -433,6 +488,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 2)
                         .build());
@@ -448,6 +506,15 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000006.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000008.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000006.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000008.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000008.json", "InputFile.exists"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 8)
                         .build());
@@ -459,6 +526,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000011.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000012.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000013.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000011.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000012.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000013.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000013.json", "InputFile.exists"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 13)
                         .build());
@@ -478,6 +548,9 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000021.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000022.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000023.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000021.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000022.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000023.json", "InputFile.length"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000023.json", "InputFile.exists"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 23)
                         .build());
@@ -506,7 +579,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "OutputFile.createOrOverwrite"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .build());
 
         assertUpdate("DROP TABLE test_delete_part_key");
@@ -532,7 +608,10 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "OutputFile.createOrOverwrite"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                         .build());
 
         assertUpdate("DROP TABLE test_delete_whole_table");
@@ -557,7 +636,11 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.exists"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "OutputFile.createOrOverwrite"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "key=domain1/", "InputFile.newInput"), 2)
                         .add(new FileOperation(DATA, "key=domain1/", "InputFile.length"))
                         .add(new FileOperation(DATA, "key=domain1/", "OutputFile.create"))
@@ -582,7 +665,12 @@ public class TestDeltaLakeFileOperations
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"), 2)
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
 
@@ -593,7 +681,12 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), 2)
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
 
@@ -604,7 +697,12 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"), 2)
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
 
@@ -615,7 +713,12 @@ public class TestDeltaLakeFileOperations
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"), 2)
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
 
@@ -626,7 +729,12 @@ public class TestDeltaLakeFileOperations
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), 2)
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
 
@@ -637,7 +745,12 @@ public class TestDeltaLakeFileOperations
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .build());
     }
@@ -667,7 +780,14 @@ public class TestDeltaLakeFileOperations
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.newStream"), 2)
                         .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000006.json", "InputFile.newStream"), 2)
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.newStream"))
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000004.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000005.json", "InputFile.length"), 2)
+                        .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000006.json", "InputFile.length"), 2)
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.length"))
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .add(new FileOperation(CDF_DATA, "key=domain1/", "InputFile.newInput"))
                         .addCopies(new FileOperation(CDF_DATA, "key=domain2/", "InputFile.newInput"), cdfFilesForDomain2)
@@ -680,6 +800,12 @@ public class TestDeltaLakeFileOperations
 
     @Test
     public void testInformationSchemaColumns()
+    {
+        testInformationSchemaColumns(true);
+        testInformationSchemaColumns(false);
+    }
+
+    private void testInformationSchemaColumns(boolean removeCachedProperties)
     {
         for (int tables : Arrays.asList(3, MAX_PREFIXES_COUNT, MAX_PREFIXES_COUNT + 3)) {
             String schemaName = "test_i_s_columns_schema" + randomNameSuffix();
@@ -695,16 +821,52 @@ public class TestDeltaLakeFileOperations
                 assertUpdate(session, "INSERT INTO test_select_i_s_columns" + i + " VALUES ('xyz', 12)", 1);
 
                 assertUpdate(session, "CREATE TABLE test_other_select_i_s_columns" + i + "(id varchar, age integer)"); // won't match the filter
+
+                if (removeCachedProperties) {
+                    removeLastTransactionVersionFromMetastore(schemaName, "test_select_i_s_columns" + i);
+                    removeLastTransactionVersionFromMetastore(schemaName, "test_other_select_i_s_columns" + i);
+                    metadataScheduler.clear();
+                }
             }
 
+            // Store table metadata in metastore for making the file access counts deterministic
+            metadataScheduler.process();
+
             // Bulk retrieval
-            assertFileSystemAccesses(session, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA AND table_name LIKE 'test_select_i_s_columns%'",
+            assertFileSystemAccesses(session, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA", removeCachedProperties ?
                     ImmutableMultiset.<FileOperation>builder()
                             .addCopies(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"), tables * 2)
                             .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables)
                             .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), tables)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), tables)
+                            .build() :
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
+                            .build());
+
+            // Repeat bulk retrieval. The above query should store column definitions in metastore and the below query should not open any files.
+            metadataScheduler.process();
+            assertFileSystemAccesses(session, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA",
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
+                            .build());
+
+            assertFileSystemAccesses(session, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA AND table_name LIKE 'test_select_i_s_columns%'",
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
                             .build());
 
             // Pointed lookup
@@ -714,17 +876,19 @@ public class TestDeltaLakeFileOperations
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                             .build());
 
             // Pointed lookup with LIKE predicate (as if unintentional)
             assertFileSystemAccesses(session, "SELECT * FROM information_schema.columns WHERE table_schema = CURRENT_SCHEMA AND table_name LIKE 'test_select_i_s_columns0'",
                     ImmutableMultiset.<FileOperation>builder()
-                            .addCopies(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), tables)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
                             .build());
 
             // Pointed lookup via DESCRIBE (which does some additional things before delegating to information_schema.columns)
@@ -734,7 +898,10 @@ public class TestDeltaLakeFileOperations
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                             .build());
 
             for (int i = 0; i < tables; i++) {
@@ -746,6 +913,12 @@ public class TestDeltaLakeFileOperations
 
     @Test
     public void testSystemMetadataTableComments()
+    {
+        testSystemMetadataTableComments(true);
+        testSystemMetadataTableComments(false);
+    }
+
+    private void testSystemMetadataTableComments(boolean removeCachedProperties)
     {
         for (int tables : Arrays.asList(3, MAX_PREFIXES_COUNT, MAX_PREFIXES_COUNT + 3)) {
             String schemaName = "test_s_m_table_comments" + randomNameSuffix();
@@ -761,26 +934,61 @@ public class TestDeltaLakeFileOperations
                 assertUpdate(session, "INSERT INTO test_select_s_m_t_comments" + i + " VALUES ('xyz', 12)", 1);
 
                 assertUpdate(session, "CREATE TABLE test_other_select_s_m_t_comments" + i + "(id varchar, age integer)"); // won't match the filter
+
+                if (removeCachedProperties) {
+                    removeLastTransactionVersionFromMetastore(schemaName, "test_select_s_m_t_comments" + i);
+                    removeLastTransactionVersionFromMetastore(schemaName, "test_other_select_s_m_t_comments" + i);
+                    metadataScheduler.clear();
+                }
             }
 
+            // Store table metadata in metastore for making the file access counts deterministic
+            metadataScheduler.process();
+
             // Bulk retrieval
-            assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name = CURRENT_SCHEMA AND table_name LIKE 'test_select_s_m_t_comments%'",
+            assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name = CURRENT_SCHEMA", removeCachedProperties ?
                     ImmutableMultiset.<FileOperation>builder()
                             .addCopies(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"), tables * 2)
                             .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables)
                             .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), tables)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"), tables * 2)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"), tables)
+                            .build() :
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
+                            .build());
+
+            // Repeat bulk retrieval. The above query should store table comments in metastore and the below query should not open any files.
+            metadataScheduler.process();
+            assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name = CURRENT_SCHEMA",
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
+                            .build());
+
+            assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name = CURRENT_SCHEMA AND table_name LIKE 'test_select_s_m_t_comments%'",
+                    ImmutableMultiset.<FileOperation>builder()
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
                             .build());
 
             // Bulk retrieval for two schemas
             assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name IN (CURRENT_SCHEMA, 'non_existent') AND table_name LIKE 'test_select_s_m_t_comments%'",
                     ImmutableMultiset.<FileOperation>builder()
-                            .addCopies(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), tables)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
                             .build());
 
             // Pointed lookup
@@ -790,17 +998,19 @@ public class TestDeltaLakeFileOperations
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
                             .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
-                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                            .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
                             .build());
 
             // Pointed lookup with LIKE predicate (as if unintentional)
             assertFileSystemAccesses(session, "SELECT * FROM system.metadata.table_comments WHERE schema_name = CURRENT_SCHEMA AND table_name LIKE 'test_select_s_m_t_comments0'",
                     ImmutableMultiset.<FileOperation>builder()
-                            .addCopies(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"), tables * 2)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"), tables)
-                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.newStream"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.exists"), tables)
+                            .addCopies(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.exists"), tables)
                             .build());
 
             for (int i = 0; i < tables; i++) {
@@ -833,7 +1043,8 @@ public class TestDeltaLakeFileOperations
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000006.checkpoint.0000000002.0000000002.parquet", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000006.checkpoint.0000000002.0000000002.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.newStream"))
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000008.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000007.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000008.json", "InputFile.length"))
                         .addCopies(new FileOperation(DATA, "no partition", "InputFile.newInput"), 7)
                         .build());
     }
@@ -846,15 +1057,22 @@ public class TestDeltaLakeFileOperations
         Path tableLocation = Files.createTempFile(tableName, null);
         copyDirectoryContents(new File(Resources.getResource("deltalake/v2_checkpoint_json").toURI()).toPath(), tableLocation);
 
-        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation.toUri()));
+        assertFileSystemAccesses("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation.toUri()),
+                ImmutableMultiset.<FileOperation>builder()
+                        .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.73a4ddb8-2bfc-40d8-b09f-1b6a0abdfb04.json", "InputFile.length"))
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.73a4ddb8-2bfc-40d8-b09f-1b6a0abdfb04.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
+                        .build());
+
         assertFileSystemAccesses("SELECT * FROM " + tableName,
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.73a4ddb8-2bfc-40d8-b09f-1b6a0abdfb04.json", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.73a4ddb8-2bfc-40d8-b09f-1b6a0abdfb04.json", "InputFile.newStream"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.90cf4e21-dbaa-41d6-8ae5-6709cfbfbfe0.parquet", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.90cf4e21-dbaa-41d6-8ae5-6709cfbfbfe0.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.90cf4e21-dbaa-41d6-8ae5-6709cfbfbfe0.parquet", "InputFile.length"))
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.90cf4e21-dbaa-41d6-8ae5-6709cfbfbfe0.parquet", "InputFile.newInput"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
                         .add(new FileOperation(DATA, "no partition", "InputFile.newInput"))
                         .build());
 
@@ -869,15 +1087,62 @@ public class TestDeltaLakeFileOperations
         Path tableLocation = Files.createTempFile(tableName, null);
         copyDirectoryContents(new File(Resources.getResource("deltalake/v2_checkpoint_parquet").toURI()).toPath(), tableLocation);
 
-        assertUpdate("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation.toUri()));
+        assertFileSystemAccesses("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')".formatted(tableName, tableLocation.toUri()),
+                ImmutableMultiset.<FileOperation>builder()
+                        .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
+                        .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.156b3304-76b2-49c3-a9a1-626f07df27c9.parquet", "InputFile.length"), 2)
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.156b3304-76b2-49c3-a9a1-626f07df27c9.parquet", "InputFile.newInput"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
+                        .build());
+
         assertFileSystemAccesses("SELECT * FROM " + tableName,
                 ImmutableMultiset.<FileOperation>builder()
                         .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.156b3304-76b2-49c3-a9a1-626f07df27c9.parquet", "InputFile.length"), 4) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
                         .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.156b3304-76b2-49c3-a9a1-626f07df27c9.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.03288d7e-af16-44ed-829c-196064a71812.parquet", "InputFile.length"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .addCopies(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.03288d7e-af16-44ed-829c-196064a71812.parquet", "InputFile.newInput"), 2) // TODO (https://github.com/trinodb/trino/issues/18916) should be checked once per query
-                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.03288d7e-af16-44ed-829c-196064a71812.parquet", "InputFile.length"))
+                        .add(new FileOperation(CHECKPOINT, "00000000000000000001.checkpoint.0000000001.0000000001.03288d7e-af16-44ed-829c-196064a71812.parquet", "InputFile.newInput"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length")) // TransactionLogTail.getEntriesFromJson access non-existing file as end of tail
+                        .add(new FileOperation(DATA, "no partition", "InputFile.newInput"))
+                        .build());
+
+        assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Test
+    public void testDeletionVectors()
+    {
+        String tableName = "test_deletion_vectors_" + randomNameSuffix();
+        registerTable(tableName, "databricks122/deletion_vectors");
+        assertUpdate("CALL system.flush_metadata_cache(schema_name => CURRENT_SCHEMA, table_name => '%s')".formatted(tableName));
+        assertFileSystemAccesses(
+                "SELECT * FROM " + tableName,
+                ImmutableMultiset.<FileOperation>builder()
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
+                        .add(new FileOperation(DELETION_VECTOR, "deletion_vector_a52eda8c-0a57-4636-814b-9c165388f7ca.bin", "InputFile.newInput"))
+                        .add(new FileOperation(DATA, "no partition", "InputFile.newInput"))
+                        .build());
+        assertFileSystemAccesses(
+                "EXPLAIN ANALYZE SELECT * FROM " + tableName,
+                ImmutableMultiset.<FileOperation>builder()
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000000.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000001.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000002.json", "InputFile.length"))
+                        .add(new FileOperation(TRANSACTION_LOG_JSON, "00000000000000000003.json", "InputFile.length"))
+                        .add(new FileOperation(STARBURST_EXTENDED_STATS_JSON, "extendeded_stats.json", "InputFile.newStream"))
+                        .add(new FileOperation(TRINO_EXTENDED_STATS_JSON, "extended_stats.json", "InputFile.newStream"))
+                        .add(new FileOperation(LAST_CHECKPOINT, "_last_checkpoint", "InputFile.newStream"))
+                        .add(new FileOperation(DELETION_VECTOR, "deletion_vector_a52eda8c-0a57-4636-814b-9c165388f7ca.bin", "InputFile.newInput"))
                         .add(new FileOperation(DATA, "no partition", "InputFile.newInput"))
                         .build());
 
@@ -939,6 +1204,9 @@ public class TestDeltaLakeFileOperations
             if (path.matches(".*/_delta_log/_starburst_meta/extendeded_stats.json")) {
                 return new FileOperation(STARBURST_EXTENDED_STATS_JSON, fileName, operationType);
             }
+            if (path.contains("/deletion_vector_")) {
+                return new FileOperation(DELETION_VECTOR, fileName, operationType);
+            }
             Pattern dataFilePattern = Pattern.compile(".*?/(?<partition>key=[^/]*/)?[^/]+");
             if (path.matches(".*/_change_data/.*")) {
                 Matcher matcher = dataFilePattern.matcher(path);
@@ -972,6 +1240,27 @@ public class TestDeltaLakeFileOperations
         STARBURST_EXTENDED_STATS_JSON,
         DATA,
         CDF_DATA,
+        DELETION_VECTOR,
         /**/;
+    }
+
+    private void registerTable(String name, String resourcePath)
+    {
+        String dataPath = getResourceLocation(resourcePath).toExternalForm();
+        getQueryRunner().execute(format("CALL system.register_table(CURRENT_SCHEMA, '%s', '%s')", name, dataPath));
+    }
+
+    private URL getResourceLocation(String resourcePath)
+    {
+        return getClass().getClassLoader().getResource(resourcePath);
+    }
+
+    private void removeLastTransactionVersionFromMetastore(String schemaName, String tableName)
+    {
+        Table table = metastore.getTable(schemaName, tableName).orElseThrow();
+        Table newMetastoreTable = Table.builder(table)
+                .setParameters(filterKeys(table.getParameters(), key -> !key.equals("trino_last_transaction_version")))
+                .build();
+        metastore.replaceTable(table.getDatabaseName(), table.getTableName(), newMetastoreTable, buildInitialPrivilegeSet(table.getOwner().orElseThrow()));
     }
 }

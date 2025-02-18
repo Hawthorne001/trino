@@ -5,7 +5,7 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>447-SNAPSHOT</version>
+        <version>471-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
@@ -14,13 +14,17 @@
     <description>Trino - Server RPM package</description>
 
     <properties>
-        <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-
         <server.tar.package>trino-server-${project.version}</server.tar.package>
         <rpm.skipSigning>true</rpm.skipSigning>
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>com.github.docker-java</groupId>
+            <artifactId>docker-java-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
@@ -165,7 +169,7 @@
             <plugin>
                 <groupId>de.dentrassi.maven</groupId>
                 <artifactId>rpm</artifactId>
-                <version>1.12.0</version>
+                <version>1.13.0</version>
                 <extensions>true</extensions>
                 <executions>
                     <execution>
@@ -177,11 +181,11 @@
                             <version>${project.version}</version>
                             <outputFileName>trino-server-rpm-${project.version}.noarch.rpm</outputFileName>
                             <release>1</release>
+                            <evalHostname>false</evalHostname>
                             <forceRelease>true</forceRelease>
                             <description>Trino Server RPM Package.</description>
                             <epoch>0</epoch>
                             <requires>
-                                <require>python ge 2.4</require>
                                 <require>/usr/sbin/useradd</require>
                                 <require>/usr/sbin/groupadd</require>
                                 <!-- Used e.g. by service launcher -->
@@ -223,7 +227,28 @@
                                             <!-- make sure launcher scripts are executable -->
                                             <mode>0755</mode>
                                         </file>
-                                        <!-- make launcher and launcher.py executable -->
+                                        <!-- make launcher and launcher executable -->
+                                        <file>
+                                            <when>
+                                                <suffix>/usr/lib/trino/bin/linux-amd64/launcher</suffix>
+                                                <type>file</type>
+                                            </when>
+                                            <mode>0755</mode>
+                                        </file>
+                                        <file>
+                                            <when>
+                                                <suffix>/usr/lib/trino/bin/linux-arm64/launcher</suffix>
+                                                <type>file</type>
+                                            </when>
+                                            <mode>0755</mode>
+                                        </file>
+                                        <file>
+                                            <when>
+                                                <suffix>/usr/lib/trino/bin/linux-ppc64le/launcher</suffix>
+                                                <type>file</type>
+                                            </when>
+                                            <mode>0755</mode>
+                                        </file>
                                         <file>
                                             <when>
                                                 <suffix>/usr/lib/trino/bin/launcher</suffix>
@@ -233,7 +258,7 @@
                                         </file>
                                         <file>
                                             <when>
-                                                <suffix>/usr/lib/trino/bin/launcher.py</suffix>
+                                                <suffix>/usr/lib/trino/bin/launcher</suffix>
                                                 <type>file</type>
                                             </when>
                                             <mode>0755</mode>

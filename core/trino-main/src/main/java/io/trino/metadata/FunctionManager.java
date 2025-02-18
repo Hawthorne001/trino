@@ -170,7 +170,7 @@ public class FunctionManager
             checkArgument(provider != null, "No function provider for catalog: '%s'", catalogHandle);
         }
 
-        return provider.getTableFunctionProcessorProvider(tableFunctionHandle.functionHandle());
+        return provider.getTableFunctionProcessorProviderFactory(tableFunctionHandle.functionHandle()).createTableFunctionProcessorProvider();
     }
 
     private FunctionDependencies getFunctionDependencies(ResolvedFunction resolvedFunction)
@@ -275,7 +275,7 @@ public class FunctionManager
 
         Type returnType = boundSignature.getReturnType();
         switch (convention.getReturnConvention()) {
-            case FAIL_ON_NULL:
+            case DEFAULT_ON_NULL, FAIL_ON_NULL:
                 verifyFunctionSignature(methodType.returnType().isAssignableFrom(returnType.getJavaType()),
                         "Expected return type to be %s, but is %s", returnType.getJavaType(), methodType.returnType());
                 break;

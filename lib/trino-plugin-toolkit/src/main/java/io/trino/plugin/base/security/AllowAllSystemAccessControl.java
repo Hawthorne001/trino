@@ -13,11 +13,13 @@
  */
 package io.trino.plugin.base.security;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.trino.spi.QueryId;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.EntityKindAndName;
 import io.trino.spi.connector.EntityPrivilege;
 import io.trino.spi.connector.SchemaTableName;
@@ -59,7 +61,7 @@ public class AllowAllSystemAccessControl
         }
 
         @Override
-        public SystemAccessControl create(Map<String, String> config)
+        public SystemAccessControl create(Map<String, String> config, SystemAccessControlContext context)
         {
             checkArgument(config.isEmpty(), "This access controller does not support any configuration properties");
             return INSTANCE;
@@ -79,9 +81,6 @@ public class AllowAllSystemAccessControl
     public void checkCanWriteSystemInformation(Identity identity) {}
 
     @Override
-    public void checkCanExecuteQuery(Identity identity) {}
-
-    @Override
     public void checkCanExecuteQuery(Identity identity, QueryId queryId) {}
 
     @Override
@@ -95,9 +94,6 @@ public class AllowAllSystemAccessControl
     {
         return queryOwners;
     }
-
-    @Override
-    public void checkCanSetSystemSessionProperty(Identity identity, String propertyName) {}
 
     @Override
     public void checkCanSetSystemSessionProperty(Identity identity, QueryId queryId, String propertyName) {}
@@ -355,6 +351,12 @@ public class AllowAllSystemAccessControl
     public Optional<ViewExpression> getColumnMask(SystemSecurityContext context, CatalogSchemaTableName tableName, String columnName, Type type)
     {
         return Optional.empty();
+    }
+
+    @Override
+    public Map<ColumnSchema, ViewExpression> getColumnMasks(SystemSecurityContext context, CatalogSchemaTableName tableName, List<ColumnSchema> columns)
+    {
+        return ImmutableMap.of();
     }
 
     @Override

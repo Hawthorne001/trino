@@ -64,10 +64,12 @@ public final class JdbcClientStats
     private final JdbcApiStats toWriteMapping = new JdbcApiStats();
     private final JdbcApiStats implementAggregation = new JdbcApiStats();
     private final JdbcApiStats convertPredicate = new JdbcApiStats();
+    private final JdbcApiStats convertProjection = new JdbcApiStats();
     private final JdbcApiStats getTableScanRedirection = new JdbcApiStats();
     private final JdbcApiStats delete = new JdbcApiStats();
     private final JdbcApiStats update = new JdbcApiStats();
     private final JdbcApiStats truncateTable = new JdbcApiStats();
+    private final JdbcApiStats getPrimaryKeys = new JdbcApiStats();
 
     @Managed
     @Nested
@@ -393,6 +395,13 @@ public final class JdbcClientStats
 
     @Managed
     @Nested
+    public JdbcApiStats getConvertProjection()
+    {
+        return convertProjection;
+    }
+
+    @Managed
+    @Nested
     public JdbcApiStats getGetTableScanRedirection()
     {
         return getTableScanRedirection;
@@ -417,5 +426,12 @@ public final class JdbcClientStats
     public JdbcApiStats getTruncateTable()
     {
         return truncateTable;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getGetPrimaryKeys()
+    {
+        return getPrimaryKeys;
     }
 }

@@ -43,12 +43,15 @@ import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableLayout;
 import io.trino.metadata.TableMetadata;
 import io.trino.operator.RetryPolicy;
+import io.trino.server.protocol.spooling.SpoolingManagerRegistry;
 import io.trino.spi.ErrorCodeSupplier;
+import io.trino.spi.RefreshType;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.statistics.TableStatisticsMetadata;
@@ -87,6 +90,7 @@ import io.trino.sql.planner.plan.TableExecuteNode;
 import io.trino.sql.planner.plan.TableFinishNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TableWriterNode;
+import io.trino.sql.planner.plan.TableWriterNode.RefreshMaterializedViewReference;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.sql.planner.planprinter.PlanPrinter;
 import io.trino.sql.planner.sanity.PlanSanityChecker;
@@ -107,7 +111,6 @@ import io.trino.sql.tree.Update;
 import io.trino.tracing.ScopedSpan;
 import io.trino.tracing.TrinoAttributes;
 import io.trino.type.UnknownType;
-import jakarta.annotation.Nonnull;
 
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.ArrayList;
@@ -131,6 +134,7 @@ import static io.trino.SystemSessionProperties.getRetryPolicy;
 import static io.trino.SystemSessionProperties.isCollectPlanStatisticsForAllQueries;
 import static io.trino.SystemSessionProperties.isUsePreferredWritePartitioning;
 import static io.trino.metadata.MetadataUtil.createQualifiedObjectName;
+import static io.trino.server.protocol.spooling.SpooledBlock.SPOOLING_METADATA_SYMBOL;
 import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.CONSTRAINT_VIOLATION;
 import static io.trino.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
@@ -179,6 +183,7 @@ public class LogicalPlanner
     private final SymbolAllocator symbolAllocator = new SymbolAllocator();
     private final Metadata metadata;
     private final PlannerContext plannerContext;
+    private final SpoolingManagerRegistry spoolingManagerRegistry;
     private final StatisticsAggregationPlanner statisticsAggregationPlanner;
     private final StatsCalculator statsCalculator;
     private final CostCalculator costCalculator;
@@ -191,13 +196,14 @@ public class LogicalPlanner
             List<PlanOptimizer> planOptimizers,
             PlanNodeIdAllocator idAllocator,
             PlannerContext plannerContext,
+            SpoolingManagerRegistry spoolingManagerRegistry,
             StatsCalculator statsCalculator,
             CostCalculator costCalculator,
             WarningCollector warningCollector,
             PlanOptimizersStatsCollector planOptimizersStatsCollector,
             CachingTableStatsProvider tableStatsProvider)
     {
-        this(session, planOptimizers, DISTRIBUTED_PLAN_SANITY_CHECKER, idAllocator, plannerContext, statsCalculator, costCalculator, warningCollector, planOptimizersStatsCollector, tableStatsProvider);
+        this(session, planOptimizers, DISTRIBUTED_PLAN_SANITY_CHECKER, idAllocator, plannerContext, spoolingManagerRegistry, statsCalculator, costCalculator, warningCollector, planOptimizersStatsCollector, tableStatsProvider);
     }
 
     public LogicalPlanner(
@@ -206,6 +212,7 @@ public class LogicalPlanner
             PlanSanityChecker planSanityChecker,
             PlanNodeIdAllocator idAllocator,
             PlannerContext plannerContext,
+            SpoolingManagerRegistry spoolingManagerRegistry,
             StatsCalculator statsCalculator,
             CostCalculator costCalculator,
             WarningCollector warningCollector,
@@ -217,6 +224,7 @@ public class LogicalPlanner
         this.planSanityChecker = requireNonNull(planSanityChecker, "planSanityChecker is null");
         this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
+        this.spoolingManagerRegistry = requireNonNull(spoolingManagerRegistry, "spoolingManagerRegistry is null");
         this.metadata = plannerContext.getMetadata();
         this.statisticsAggregationPlanner = new StatisticsAggregationPlanner(symbolAllocator, plannerContext, session);
         this.statsCalculator = requireNonNull(statsCalculator, "statsCalculator is null");
@@ -239,7 +247,7 @@ public class LogicalPlanner
     public Plan plan(Analysis analysis, Stage stage, boolean collectPlanStatistics)
     {
         PlanNode root;
-        try (var ignored = scopedSpan(plannerContext.getTracer(), "plan")) {
+        try (var _ = scopedSpan(plannerContext.getTracer(), "plan")) {
             root = planStatement(analysis, analysis.getStatement());
         }
 
@@ -254,12 +262,12 @@ public class LogicalPlanner
                     false));
         }
 
-        try (var ignored = scopedSpan(plannerContext.getTracer(), "validate-intermediate")) {
+        try (var _ = scopedSpan(plannerContext.getTracer(), "validate-intermediate")) {
             planSanityChecker.validateIntermediatePlan(root, session, plannerContext, warningCollector);
         }
 
         if (stage.ordinal() >= OPTIMIZED.ordinal()) {
-            try (var ignored = scopedSpan(plannerContext.getTracer(), "optimizer")) {
+            try (var _ = scopedSpan(plannerContext.getTracer(), "optimizer")) {
                 for (PlanOptimizer optimizer : planOptimizers) {
                     root = runOptimizer(root, tableStatsProvider, optimizer);
                 }
@@ -268,7 +276,7 @@ public class LogicalPlanner
 
         if (stage.ordinal() >= OPTIMIZED_AND_VALIDATED.ordinal()) {
             // make sure we produce a valid plan after optimizations run. This is mainly to catch programming errors
-            try (var ignored = scopedSpan(plannerContext.getTracer(), "validate-final")) {
+            try (var _ = scopedSpan(plannerContext.getTracer(), "validate-final")) {
                 planSanityChecker.validateFinalPlan(root, session, plannerContext, warningCollector);
             }
         }
@@ -287,17 +295,16 @@ public class LogicalPlanner
         StatsAndCosts statsAndCosts;
         StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, session, collectTableStatsProvider);
         CostProvider costProvider = new CachingCostProvider(costCalculator, statsProvider, Optional.empty(), session);
-        try (var ignored = scopedSpan(plannerContext.getTracer(), "plan-stats")) {
+        try (var _ = scopedSpan(plannerContext.getTracer(), "plan-stats")) {
             statsAndCosts = StatsAndCosts.create(root, statsProvider, costProvider);
         }
         return new Plan(root, statsAndCosts);
     }
 
-    @Nonnull
     private PlanNode runOptimizer(PlanNode root, TableStatsProvider tableStatsProvider, PlanOptimizer optimizer)
     {
         PlanNode result;
-        try (var ignored = optimizerSpan(optimizer)) {
+        try (var _ = optimizerSpan(optimizer)) {
             result = optimizer.optimize(root, new PlanOptimizer.Context(session, symbolAllocator, idAllocator, warningCollector, planOptimizersStatsCollector, tableStatsProvider, RuntimeInfoProvider.noImplementation()));
         }
         if (result == null) {
@@ -429,7 +436,7 @@ public class LogicalPlanner
                 idAllocator.getNextId(),
                 singleAggregation(
                         idAllocator.getNextId(),
-                        TableScanNode.newInstance(idAllocator.getNextId(), targetTable, tableScanOutputs.build(), symbolToColumnHandle.buildOrThrow(), false, Optional.empty()),
+                        new TableScanNode(idAllocator.getNextId(), targetTable, tableScanOutputs.build(), symbolToColumnHandle.buildOrThrow(), TupleDomain.all(), Optional.empty(), false, Optional.empty()),
                         statisticAggregations.getAggregations(),
                         singleGroupingSet(groupingSymbols)),
                 new StatisticsWriterNode.WriteStatisticsReference(targetTable),
@@ -507,7 +514,7 @@ public class LogicalPlanner
             TableHandle tableHandle,
             List<ColumnHandle> insertColumns,
             Optional<TableLayout> newTableLayout,
-            Optional<WriterTarget> materializedViewRefreshWriterTarget)
+            Optional<RefreshMaterializedViewReference> materializedViewRefreshWriterTarget)
     {
         TableMetadata tableMetadata = metadata.getTableMetadata(session, tableHandle);
 
@@ -591,11 +598,13 @@ public class LogicalPlanner
         TableStatisticsMetadata statisticsMetadata = metadata.getStatisticsCollectionMetadataForWrite(session, tableHandle.catalogHandle(), tableMetadata.metadata());
 
         if (materializedViewRefreshWriterTarget.isPresent()) {
+            RefreshType refreshType = IncrementalRefreshVisitor.canIncrementallyRefresh(plan.getRoot());
+            WriterTarget writerTarget = materializedViewRefreshWriterTarget.get().withRefreshType(refreshType);
             return createTableWriterPlan(
                     analysis,
                     plan.getRoot(),
                     plan.getFieldMappings(),
-                    materializedViewRefreshWriterTarget.get(),
+                    writerTarget,
                     insertedTableColumnNames,
                     newTableLayout,
                     statisticsMetadata);
@@ -672,11 +681,13 @@ public class LogicalPlanner
         List<String> tableFunctions = analysis.getPolymorphicTableFunctions().stream()
                 .map(polymorphicTableFunction -> polymorphicTableFunction.getNode().getName().toString())
                 .collect(toImmutableList());
-        TableWriterNode.RefreshMaterializedViewReference writerTarget = new TableWriterNode.RefreshMaterializedViewReference(
+        RefreshMaterializedViewReference writerTarget = new RefreshMaterializedViewReference(
                 viewAnalysis.getTable().toString(),
                 tableHandle,
                 ImmutableList.copyOf(analysis.getTables()),
-                tableFunctions);
+                tableFunctions,
+                // this is a placeholder value - refresh type will be determined by getInsertPlan based on the plan tree
+                RefreshType.FULL);
         return getInsertPlan(analysis, viewAnalysis.getTable(), query, tableHandle, viewAnalysis.getColumns(), newTableLayout, Optional.of(writerTarget));
     }
 
@@ -897,6 +908,10 @@ public class LogicalPlanner
             columnNumber++;
         }
 
+        if (session.getQueryDataEncoding().isPresent() && spoolingManagerRegistry.getSpoolingManager().isPresent()) {
+            names.add(SPOOLING_METADATA_SYMBOL.name());
+            outputs.add(SPOOLING_METADATA_SYMBOL);
+        }
         return new OutputNode(idAllocator.getNextId(), plan.getRoot(), names.build(), outputs.build());
     }
 

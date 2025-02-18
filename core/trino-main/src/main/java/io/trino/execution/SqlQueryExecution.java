@@ -54,6 +54,7 @@ import io.trino.server.BasicQueryInfo;
 import io.trino.server.DynamicFilterService;
 import io.trino.server.ResultQueryInfo;
 import io.trino.server.protocol.Slug;
+import io.trino.server.protocol.spooling.SpoolingManagerRegistry;
 import io.trino.spi.QueryId;
 import io.trino.spi.TrinoException;
 import io.trino.sql.PlannerContext;
@@ -117,6 +118,7 @@ public class SqlQueryExecution
     private final SplitSourceFactory splitSourceFactory;
     private final NodePartitioningManager nodePartitioningManager;
     private final NodeScheduler nodeScheduler;
+    private final SpoolingManagerRegistry spoolingManagerRegistry;
     private final NodeAllocatorService nodeAllocatorService;
     private final PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory;
     private final OutputStatsEstimatorFactory outputStatsEstimatorFactory;
@@ -157,6 +159,7 @@ public class SqlQueryExecution
             SplitSourceFactory splitSourceFactory,
             NodePartitioningManager nodePartitioningManager,
             NodeScheduler nodeScheduler,
+            SpoolingManagerRegistry spoolingManagerRegistry,
             NodeAllocatorService nodeAllocatorService,
             PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory,
             OutputStatsEstimatorFactory outputStatsEstimatorFactory,
@@ -184,13 +187,14 @@ public class SqlQueryExecution
             EventDrivenTaskSourceFactory eventDrivenTaskSourceFactory,
             TaskDescriptorStorage taskDescriptorStorage)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             this.slug = requireNonNull(slug, "slug is null");
             this.tracer = requireNonNull(tracer, "tracer is null");
             this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
             this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
             this.nodePartitioningManager = requireNonNull(nodePartitioningManager, "nodePartitioningManager is null");
             this.nodeScheduler = requireNonNull(nodeScheduler, "nodeScheduler is null");
+            this.spoolingManagerRegistry = requireNonNull(spoolingManagerRegistry, "spoolingManagerRegistry is null");
             this.nodeAllocatorService = requireNonNull(nodeAllocatorService, "nodeAllocatorService is null");
             this.partitionMemoryEstimatorFactory = requireNonNull(partitionMemoryEstimatorFactory, "partitionMemoryEstimatorFactory is null");
             this.outputStatsEstimatorFactory = requireNonNull(outputStatsEstimatorFactory, "outputDataSizeEstimatorFactory is null");
@@ -392,7 +396,7 @@ public class SqlQueryExecution
     @Override
     public void start()
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             try {
                 if (!stateMachine.transitionToPlanning()) {
                     // query already started or finished
@@ -452,7 +456,7 @@ public class SqlQueryExecution
     @Override
     public void addStateChangeListener(StateChangeListener<QueryState> stateChangeListener)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             stateMachine.addStateChangeListener(stateChangeListener);
         }
     }
@@ -474,7 +478,7 @@ public class SqlQueryExecution
         Span span = tracer.spanBuilder("planner")
                 .setParent(Context.current().with(getSession().getQuerySpan()))
                 .startSpan();
-        try (var ignored = scopedSpan(span)) {
+        try (var _ = scopedSpan(span)) {
             return doPlanQuery(tableStatsProvider);
         }
         catch (StackOverflowError e) {
@@ -490,6 +494,7 @@ public class SqlQueryExecution
                 planOptimizers,
                 idAllocator,
                 plannerContext,
+                spoolingManagerRegistry,
                 statsCalculator,
                 costCalculator,
                 stateMachine.getWarningCollector(),
@@ -500,12 +505,12 @@ public class SqlQueryExecution
 
         // fragment the plan
         SubPlan fragmentedPlan;
-        try (var ignored = scopedSpan(tracer, "fragment-plan")) {
+        try (var _ = scopedSpan(tracer, "fragment-plan")) {
             fragmentedPlan = planFragmenter.createSubPlans(stateMachine.getSession(), plan, false, stateMachine.getWarningCollector());
         }
 
         // extract inputs
-        try (var ignored = scopedSpan(tracer, "extract-inputs")) {
+        try (var _ = scopedSpan(tracer, "extract-inputs")) {
             stateMachine.setInputs(new InputExtractor(plannerContext.getMetadata(), stateMachine.getSession()).extractInputs(fragmentedPlan));
         }
 
@@ -602,7 +607,7 @@ public class SqlQueryExecution
     {
         requireNonNull(stageId, "stageId is null");
 
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             QueryScheduler scheduler = queryScheduler.get();
             if (scheduler != null) {
                 scheduler.cancelStage(stageId);
@@ -615,7 +620,7 @@ public class SqlQueryExecution
     {
         requireNonNull(taskId, "stageId is null");
 
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             QueryScheduler scheduler = queryScheduler.get();
             if (scheduler != null) {
                 scheduler.failTask(taskId, reason);
@@ -688,7 +693,7 @@ public class SqlQueryExecution
     @Override
     public QueryInfo getQueryInfo()
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + stateMachine.getQueryId())) {
             // acquire reference to scheduler before checking finalQueryInfo, because
             // state change listener sets finalQueryInfo and then clears scheduler when
             // the query finishes.
@@ -781,6 +786,7 @@ public class SqlQueryExecution
         private final SplitSourceFactory splitSourceFactory;
         private final NodePartitioningManager nodePartitioningManager;
         private final NodeScheduler nodeScheduler;
+        private final SpoolingManagerRegistry spoolingManagerRegistry;
         private final NodeAllocatorService nodeAllocatorService;
         private final PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory;
         private final OutputStatsEstimatorFactory outputStatsEstimatorFactory;
@@ -813,6 +819,7 @@ public class SqlQueryExecution
                 SplitSourceFactory splitSourceFactory,
                 NodePartitioningManager nodePartitioningManager,
                 NodeScheduler nodeScheduler,
+                SpoolingManagerRegistry spoolingManagerRegistry,
                 NodeAllocatorService nodeAllocatorService,
                 PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory,
                 OutputStatsEstimatorFactory outputStatsEstimatorFactory,
@@ -844,6 +851,7 @@ public class SqlQueryExecution
             this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
             this.nodePartitioningManager = requireNonNull(nodePartitioningManager, "nodePartitioningManager is null");
             this.nodeScheduler = requireNonNull(nodeScheduler, "nodeScheduler is null");
+            this.spoolingManagerRegistry = requireNonNull(spoolingManagerRegistry, "spoolingManagerRegistry is null");
             this.nodeAllocatorService = requireNonNull(nodeAllocatorService, "nodeAllocatorService is null");
             this.partitionMemoryEstimatorFactory = requireNonNull(partitionMemoryEstimatorFactory, "partitionMemoryEstimatorFactory is null");
             this.outputStatsEstimatorFactory = requireNonNull(outputStatsEstimatorFactory, "outputDataSizeEstimatorFactory is null");
@@ -891,6 +899,7 @@ public class SqlQueryExecution
                     splitSourceFactory,
                     nodePartitioningManager,
                     nodeScheduler,
+                    spoolingManagerRegistry,
                     nodeAllocatorService,
                     partitionMemoryEstimatorFactory,
                     outputStatsEstimatorFactory,

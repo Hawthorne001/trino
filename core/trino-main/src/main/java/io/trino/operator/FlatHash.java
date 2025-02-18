@@ -19,6 +19,7 @@ import io.trino.spi.block.BlockBuilder;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.Arrays;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfUnchecked;
@@ -111,6 +112,30 @@ public final class FlatHash
 
         recordGroups = createRecordGroups(capacity, recordSize);
         fixedSizeEstimate = computeFixedSizeEstimate(capacity, recordSize);
+    }
+
+    private FlatHash(FlatHash other)
+    {
+        flatHashStrategy = other.flatHashStrategy;
+        hasPrecomputedHash = other.hasPrecomputedHash;
+
+        recordSize = other.recordSize;
+        recordGroupIdOffset = other.recordGroupIdOffset;
+        recordHashOffset = other.recordHashOffset;
+        recordValueOffset = other.recordValueOffset;
+        capacity = other.capacity;
+        mask = other.mask;
+        control = Arrays.copyOf(other.control, other.control.length);
+        recordGroups = Arrays.stream(other.recordGroups)
+                .map(records -> records == null ? null : Arrays.copyOf(records, records.length))
+                .toArray(byte[][]::new);
+        variableWidthData = other.variableWidthData == null ? null : new VariableWidthData(other.variableWidthData);
+        groupRecordIndex = Arrays.copyOf(other.groupRecordIndex, other.groupRecordIndex.length);
+        checkMemoryReservation = other.checkMemoryReservation;
+        fixedSizeEstimate = other.fixedSizeEstimate;
+        rehashMemoryReservation = other.rehashMemoryReservation;
+        nextGroupId = other.nextGroupId;
+        maxFill = other.maxFill;
     }
 
     public long getEstimatedSize()
@@ -246,7 +271,7 @@ public final class FlatHash
         long controlMatches = match(controlVector, repeated);
         while (controlMatches != 0) {
             int index = bucket(vectorStartBucket + (Long.numberOfTrailingZeros(controlMatches) >>> 3));
-            if (valueNotDistinctFrom(index, blocks, position, hash)) {
+            if (valueIdentical(index, blocks, position, hash)) {
                 return index;
             }
 
@@ -461,7 +486,7 @@ public final class FlatHash
         }
     }
 
-    private boolean valueNotDistinctFrom(int leftIndex, Block[] rightBlocks, int rightPosition, long rightHash)
+    private boolean valueIdentical(int leftIndex, Block[] rightBlocks, int rightPosition, long rightHash)
     {
         byte[] leftRecords = getRecords(leftIndex);
         int leftRecordOffset = getRecordOffset(leftIndex);
@@ -478,7 +503,7 @@ public final class FlatHash
             leftVariableWidthChunk = variableWidthData.getChunk(leftRecords, leftRecordOffset);
         }
 
-        return flatHashStrategy.valueNotDistinctFrom(
+        return flatHashStrategy.valueIdentical(
                 leftRecords,
                 leftRecordOffset + recordValueOffset,
                 leftVariableWidthChunk,
@@ -548,5 +573,10 @@ public final class FlatHash
             result = addExact(result, value);
         }
         return result;
+    }
+
+    public FlatHash copy()
+    {
+        return new FlatHash(this);
     }
 }

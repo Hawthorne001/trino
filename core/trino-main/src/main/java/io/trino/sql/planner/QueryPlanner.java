@@ -31,6 +31,7 @@ import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SortOrder;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Int128;
+import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.sql.NodeUtils;
 import io.trino.sql.PlannerContext;
@@ -51,10 +52,10 @@ import io.trino.sql.ir.Expression;
 import io.trino.sql.ir.FieldReference;
 import io.trino.sql.ir.IsNull;
 import io.trino.sql.ir.Logical;
-import io.trino.sql.ir.Not;
 import io.trino.sql.ir.Row;
 import io.trino.sql.ir.WhenClause;
 import io.trino.sql.planner.RelationPlanner.PatternRecognitionComponents;
+import io.trino.sql.planner.optimizations.PlanNodeSearcher;
 import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.AggregationNode.Aggregation;
 import io.trino.sql.planner.plan.AssignUniqueId;
@@ -73,6 +74,7 @@ import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.SimplePlanRewriter;
 import io.trino.sql.planner.plan.SortNode;
+import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TableWriterNode.MergeParadigmAndTypes;
 import io.trino.sql.planner.plan.TableWriterNode.MergeTarget;
 import io.trino.sql.planner.plan.UnionNode;
@@ -152,6 +154,7 @@ import static io.trino.sql.ir.Booleans.TRUE;
 import static io.trino.sql.ir.Comparison.Operator.GREATER_THAN_OR_EQUAL;
 import static io.trino.sql.ir.Comparison.Operator.LESS_THAN_OR_EQUAL;
 import static io.trino.sql.ir.IrExpressions.ifExpression;
+import static io.trino.sql.ir.IrExpressions.not;
 import static io.trino.sql.ir.IrUtils.and;
 import static io.trino.sql.planner.GroupingOperationRewriter.rewriteGroupingOperation;
 import static io.trino.sql.planner.LogicalPlanner.failFunction;
@@ -171,6 +174,7 @@ import static io.trino.sql.tree.WindowFrame.Type.ROWS;
 import static io.trino.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static io.trino.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 
 class QueryPlanner
@@ -311,7 +315,7 @@ class QueryPlanner
         NodeAndMappings checkConvergenceStep = copy(recursionStep, mappings);
         Symbol countSymbol = symbolAllocator.newSymbol("count", BIGINT);
         ResolvedFunction function = plannerContext.getMetadata().resolveBuiltinFunction("count", ImmutableList.of());
-        WindowNode.Function countFunction = new WindowNode.Function(function, ImmutableList.of(), DEFAULT_FRAME, false);
+        WindowNode.Function countFunction = new WindowNode.Function(function, ImmutableList.of(), Optional.empty(), DEFAULT_FRAME, false, false);
 
         WindowNode windowNode = new WindowNode(
                 idAllocator.getNextId(),
@@ -549,6 +553,8 @@ class QueryPlanner
         List<Symbol> columnSymbols = columnSymbolsBuilder.build();
         Symbol operationSymbol = symbolAllocator.newSymbol("operation", TINYINT);
         assignmentsBuilder.put(operationSymbol, new Constant(TINYINT, (long) DELETE_OPERATION_NUMBER));
+        Symbol caseNumberSymbol = symbolAllocator.newSymbol("case_number", INTEGER);
+        assignmentsBuilder.put(caseNumberSymbol, new Constant(INTEGER, 0L));
         Symbol projectedRowIdSymbol = symbolAllocator.newSymbol(rowIdSymbol.name(), rowIdType);
         assignmentsBuilder.put(projectedRowIdSymbol, rowIdSymbol.toSymbolReference());
         assignmentsBuilder.put(symbolAllocator.newSymbol("insert_from_update", TINYINT), new Constant(TINYINT, 0L));
@@ -570,7 +576,9 @@ class QueryPlanner
                         handle,
                         Optional.empty(),
                         tableMetadata.table(),
-                        paradigmAndTypes),
+                        paradigmAndTypes,
+                        findSourceTableHandles(projectNode),
+                        ImmutableListMultimap.of()),
                 projectNode.getOutputSymbols(),
                 partitioningScheme,
                 outputs);
@@ -593,7 +601,7 @@ class QueryPlanner
 
         io.trino.sql.tree.Expression[] orderedColumnValuesArray = new io.trino.sql.tree.Expression[updatedColumnHandles.size()];
         node.getAssignments().forEach(assignment -> {
-            String name = assignment.getName().getValue();
+            String name = assignment.getName().getValue().toLowerCase(ENGLISH);
             ColumnHandle handle = nameToHandle.get(name);
             int index = updatedColumnHandles.indexOf(handle);
             if (index >= 0) {
@@ -823,7 +831,7 @@ class QueryPlanner
             // Build the match condition for the MERGE case
 
             // Add a boolean column which is true if a target table row was matched
-            rowBuilder.add(new Not(new IsNull(presentColumn.toSymbolReference())));
+            rowBuilder.add(not(metadata, new IsNull(presentColumn.toSymbolReference())));
 
             // Add the operation number
             rowBuilder.add(new Constant(TINYINT, (long) getMergeCaseOperationNumber(mergeCase)));
@@ -858,17 +866,16 @@ class QueryPlanner
             }
         }
 
-        // Build the "else" clause for the SearchedCaseExpression
-        ImmutableList.Builder<Expression> rowBuilder = ImmutableList.builder();
-        dataColumnSchemas.forEach(columnSchema ->
-                rowBuilder.add(new Constant(columnSchema.getType(), null)));
-        rowBuilder.add(new Not(new IsNull(presentColumn.toSymbolReference())));
-        // The operation number
-        rowBuilder.add(new Constant(TINYINT, -1L));
-        // The case number
-        rowBuilder.add(new Constant(INTEGER, -1L));
-
-        Case caseExpression = new Case(whenClauses.build(), new Row(rowBuilder.build()));
+        Case caseExpression = new Case(
+                whenClauses.build(),
+                new Constant(
+                        RowType.anonymous(ImmutableList.<Type>builder()
+                        .addAll(dataColumnSchemas.stream().map(ColumnSchema::getType).collect(toImmutableList()))
+                        .add(BOOLEAN)
+                        .add(TINYINT)
+                        .add(INTEGER)
+                        .build()),
+                        null));
 
         Symbol mergeRowSymbol = symbolAllocator.newSymbol("merge_row", mergeAnalysis.getMergeRowType());
         Symbol caseNumberSymbol = symbolAllocator.newSymbol("case_number", INTEGER);
@@ -905,8 +912,8 @@ class QueryPlanner
         // Raise an error if unique_id symbol is non-null and the unique_id/case_number combination was not distinct
         Expression filter = ifExpression(
                 Logical.and(
-                        new Not(isDistinctSymbol.toSymbolReference()),
-                        new Not(new IsNull(uniqueIdSymbol.toSymbolReference()))),
+                        not(metadata, isDistinctSymbol.toSymbolReference()),
+                        not(metadata, new IsNull(uniqueIdSymbol.toSymbolReference()))),
                 new Cast(
                         failFunction(metadata, MERGE_TARGET_ROW_MULTIPLE_MATCHES, "One MERGE target table row matched more than one source row"),
                         BOOLEAN),
@@ -934,7 +941,13 @@ class QueryPlanner
                     columnNamesBuilder.add(columnSchema.getName());
                 });
         MergeParadigmAndTypes mergeParadigmAndTypes = new MergeParadigmAndTypes(Optional.of(paradigm), typesBuilder.build(), columnNamesBuilder.build(), rowIdType);
-        MergeTarget mergeTarget = new MergeTarget(handle, Optional.empty(), metadata.getTableName(session, handle).getSchemaTableName(), mergeParadigmAndTypes);
+        MergeTarget mergeTarget = new MergeTarget(
+                handle,
+                Optional.empty(),
+                metadata.getTableName(session, handle).getSchemaTableName(),
+                mergeParadigmAndTypes,
+                findSourceTableHandles(planNode),
+                mergeAnalysis.getUpdateCaseColumnHandles());
 
         ImmutableList.Builder<Symbol> columnSymbolsBuilder = ImmutableList.builder();
         for (ColumnHandle columnHandle : mergeAnalysis.getDataColumnHandles()) {
@@ -949,11 +962,13 @@ class QueryPlanner
         }
 
         Symbol operationSymbol = symbolAllocator.newSymbol("operation", TINYINT);
+        Symbol caseNumberSymbol = symbolAllocator.newSymbol("case_number", INTEGER);
         Symbol insertFromUpdateSymbol = symbolAllocator.newSymbol("insert_from_update", TINYINT);
 
         List<Symbol> projectedSymbols = ImmutableList.<Symbol>builder()
                 .addAll(columnSymbols)
                 .add(operationSymbol)
+                .add(caseNumberSymbol)
                 .add(rowIdSymbol)
                 .add(insertFromUpdateSymbol)
                 .build();
@@ -987,6 +1002,17 @@ class QueryPlanner
                 projectedSymbols,
                 partitioningScheme,
                 outputs);
+    }
+
+    private static List<TableHandle> findSourceTableHandles(PlanNode startNode)
+    {
+        return PlanNodeSearcher.searchFrom(startNode)
+                .where(TableScanNode.class::isInstance)
+                .findAll()
+                .stream()
+                .map(TableScanNode.class::cast)
+                .map(TableScanNode::getTable)
+                .collect(toImmutableList());
     }
 
     private static int getMergeCaseOperationNumber(MergeCase mergeCase)
@@ -1240,7 +1266,7 @@ class QueryPlanner
             //   which requires that ORDER BY be a subset of arguments
             //   What can happen currently is that if the argument requires a coercion, the argument will take a different input that the ORDER BY clause, which is undefined behavior
             Aggregation aggregation = new Aggregation(
-                    analysis.getResolvedFunction(function),
+                    analysis.getResolvedFunction(function).get(),
                     function.getArguments().stream()
                             .map(argument -> {
                                 if (argument instanceof LambdaExpression) {
@@ -1438,6 +1464,9 @@ class QueryPlanner
                 inputsBuilder.addAll(windowFunction.getArguments().stream()
                                 .filter(argument -> !(argument instanceof LambdaExpression)) // lambda expression is generated at execution time
                                 .collect(Collectors.toList()));
+                inputsBuilder.addAll(getSortItemsFromOrderBy(windowFunction.getOrderBy()).stream()
+                        .map(SortItem::getSortKey)
+                        .iterator());
             }
 
             List<io.trino.sql.tree.Expression> inputs = inputsBuilder.build();
@@ -1553,10 +1582,7 @@ class QueryPlanner
                 sortKeyCoercedForFrameBoundCalculation = alreadyCoerced;
             }
             else {
-                Expression cast = new Cast(
-                        coercions.get(sortKey).toSymbolReference(),
-                        expectedType,
-                        false);
+                Expression cast = new Cast(coercions.get(sortKey).toSymbolReference(), expectedType);
                 sortKeyCoercedForFrameBoundCalculation = symbolAllocator.newSymbol(cast);
                 sortKeyCoercions.put(expectedType, sortKeyCoercedForFrameBoundCalculation);
                 subPlan = subPlan.withNewRoot(new ProjectNode(
@@ -1596,10 +1622,7 @@ class QueryPlanner
                 sortKeyCoercedForFrameBoundComparison = Optional.of(alreadyCoerced);
             }
             else {
-                Expression cast = new Cast(
-                        coercions.get(sortKey).toSymbolReference(),
-                        expectedType,
-                        false);
+                Expression cast = new Cast(coercions.get(sortKey).toSymbolReference(), expectedType);
                 Symbol castSymbol = symbolAllocator.newSymbol(cast);
                 sortKeyCoercions.put(expectedType, castSymbol);
                 subPlan = subPlan.withNewRoot(new ProjectNode(
@@ -1664,10 +1687,7 @@ class QueryPlanner
             }
         }
         else {
-            offsetToBigint = new Cast(
-                    offsetSymbol.toSymbolReference(),
-                    BIGINT,
-                    false);
+            offsetToBigint = new Cast(offsetSymbol.toSymbolReference(), BIGINT);
         }
 
         Symbol coercedOffsetSymbol = symbolAllocator.newSymbol(offsetToBigint);
@@ -1759,7 +1779,7 @@ class QueryPlanner
                     .orElse(NullTreatment.RESPECT);
 
             WindowNode.Function function = new WindowNode.Function(
-                    analysis.getResolvedFunction(windowFunction),
+                    analysis.getResolvedFunction(windowFunction).get(),
                     windowFunction.getArguments().stream()
                             .map(argument -> {
                                 if (argument instanceof LambdaExpression) {
@@ -1768,8 +1788,10 @@ class QueryPlanner
                                 return coercions.get(argument).toSymbolReference();
                             })
                             .collect(toImmutableList()),
+                    windowFunction.getOrderBy().map(orderBy -> translateOrderingScheme(orderBy.getSortItems(), coercions::get)),
                     frame,
-                    nullTreatment == NullTreatment.IGNORE);
+                    nullTreatment == NullTreatment.IGNORE,
+                    windowFunction.isDistinct());
 
             functions.put(newSymbol, function);
             mappings.put(scopeAwareKey(windowFunction, analysis, subPlan.getScope()), newSymbol);
@@ -1840,7 +1862,7 @@ class QueryPlanner
                     .orElse(NullTreatment.RESPECT);
 
             WindowNode.Function function = new WindowNode.Function(
-                    analysis.getResolvedFunction(windowFunction),
+                    analysis.getResolvedFunction(windowFunction).get(),
                     windowFunction.getArguments().stream()
                             .map(argument -> {
                                 if (argument instanceof LambdaExpression) {
@@ -1849,8 +1871,10 @@ class QueryPlanner
                                 return coercions.get(argument).toSymbolReference();
                             })
                             .collect(toImmutableList()),
+                    Optional.empty(),
                     baseFrame,
-                    nullTreatment == NullTreatment.IGNORE);
+                    nullTreatment == NullTreatment.IGNORE,
+                    false);
 
             functions.put(newSymbol, function);
             mappings.put(scopeAwareKey(windowFunction, analysis, subPlan.getScope()), newSymbol);
@@ -2050,10 +2074,7 @@ class QueryPlanner
                 if (coercion != null) {
                     Symbol symbol = symbolAllocator.newSymbol("expr", coercion);
 
-                    assignments.put(symbol, new Cast(
-                            subPlan.rewrite(expression),
-                            coercion,
-                            false));
+                    assignments.put(symbol, new Cast(subPlan.rewrite(expression), coercion));
 
                     mappings.put(NodeRef.of(expression), symbol);
                 }
@@ -2079,7 +2100,7 @@ class QueryPlanner
             return rewritten;
         }
 
-        return new Cast(rewritten, coercion, false);
+        return new Cast(rewritten, coercion);
     }
 
     public static NodeAndMappings coerce(RelationPlan plan, List<Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)

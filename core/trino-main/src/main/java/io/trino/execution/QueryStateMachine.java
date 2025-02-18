@@ -53,6 +53,7 @@ import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.spi.security.SelectedRole;
 import io.trino.spi.type.Type;
+import io.trino.sql.SessionPropertyResolver.SessionPropertiesApplier;
 import io.trino.sql.analyzer.Output;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.tracing.TrinoAttributes;
@@ -88,6 +89,7 @@ import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.SystemSessionProperties.getRetryPolicy;
+import static io.trino.SystemSessionProperties.isSpoolingEnabled;
 import static io.trino.execution.BasicStageStats.EMPTY_STAGE_STATS;
 import static io.trino.execution.QueryState.DISPATCHING;
 import static io.trino.execution.QueryState.FAILED;
@@ -104,6 +106,7 @@ import static io.trino.operator.RetryPolicy.TASK;
 import static io.trino.server.DynamicFilterService.DynamicFiltersStats;
 import static io.trino.spi.StandardErrorCode.NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.USER_CANCELED;
+import static io.trino.spi.resourcegroups.QueryType.SELECT;
 import static io.trino.util.Ciphers.createRandomAesEncryptionKey;
 import static io.trino.util.Ciphers.serializeAesEncryptionKey;
 import static io.trino.util.Failures.toFailure;
@@ -243,6 +246,7 @@ public class QueryStateMachine
             PlanOptimizersStatsCollector queryStatsCollector,
             Optional<QueryType> queryType,
             boolean faultTolerantExecutionExchangeEncryptionEnabled,
+            Optional<SessionPropertiesApplier> sessionPropertiesApplier,
             NodeVersion version)
     {
         return beginWithTicker(
@@ -262,6 +266,7 @@ public class QueryStateMachine
                 queryStatsCollector,
                 queryType,
                 faultTolerantExecutionExchangeEncryptionEnabled,
+                sessionPropertiesApplier,
                 version);
     }
 
@@ -282,6 +287,7 @@ public class QueryStateMachine
             PlanOptimizersStatsCollector queryStatsCollector,
             Optional<QueryType> queryType,
             boolean faultTolerantExecutionExchangeEncryptionEnabled,
+            Optional<SessionPropertiesApplier> sessionPropertiesApplier,
             NodeVersion version)
     {
         // if there is an existing transaction, activate it
@@ -306,6 +312,15 @@ public class QueryStateMachine
         if (getRetryPolicy(session) == TASK && faultTolerantExecutionExchangeEncryptionEnabled) {
             // encryption is mandatory for fault tolerant execution as it relies on an external storage to store intermediate data generated during an exchange
             session = session.withExchangeEncryption(serializeAesEncryptionKey(createRandomAesEncryptionKey()));
+        }
+
+        if (!queryType.map(SELECT::equals).orElse(false) || !isSpoolingEnabled(session)) {
+            session = session.withoutSpooling();
+        }
+
+        // Apply WITH SESSION properties which require transaction to be started to resolve catalog handles
+        if (sessionPropertiesApplier.isPresent()) {
+            session = sessionPropertiesApplier.orElseThrow().apply(session);
         }
 
         Span querySpan = session.getQuerySpan();
@@ -542,6 +557,7 @@ public class QueryStateMachine
                 stageStats.getSpilledDataSize(),
                 stageStats.getPhysicalInputDataSize(),
                 stageStats.getPhysicalWrittenDataSize(),
+                stageStats.getInternalNetworkInputDataSize(),
 
                 stageStats.getCumulativeUserMemory(),
                 stageStats.getFailedCumulativeUserMemory(),
@@ -550,10 +566,14 @@ public class QueryStateMachine
                 succinctBytes(getPeakUserMemoryInBytes()),
                 succinctBytes(getPeakTotalMemoryInBytes()),
 
+                queryStateTimer.getPlanningTime(),
+                queryStateTimer.getAnalysisTime(),
                 stageStats.getTotalCpuTime(),
                 stageStats.getFailedCpuTime(),
                 stageStats.getTotalScheduledTime(),
                 stageStats.getFailedScheduledTime(),
+                queryStateTimer.getFinishingTime(),
+                stageStats.getPhysicalInputReadTime(),
 
                 stageStats.isFullyBlocked(),
                 stageStats.getBlockedReasons(),
@@ -825,6 +845,7 @@ public class QueryStateMachine
                 queryStateTimer.getAnalysisTime(),
                 queryStateTimer.getPlanningTime(),
                 queryStateTimer.getPlanningCpuTime(),
+                queryStateTimer.getStartingTime(),
                 queryStateTimer.getFinishingTime(),
 
                 totalTasks,
@@ -1311,7 +1332,7 @@ public class QueryStateMachine
     {
         // Execution start time is empty if planning has not started
         return queryStateTimer.getExecutionStartTime()
-                .map(ignored -> queryStateTimer.getPlanningTime());
+                .map(_ -> queryStateTimer.getPlanningTime());
     }
 
     public DateTime getLastHeartbeat()
@@ -1364,7 +1385,12 @@ public class QueryStateMachine
             return;
         }
 
-        QueryInfo queryInfo = finalInfo.get();
+        QueryInfo prunedQueryInfo = QueryStateMachine.pruneQueryInfo(finalInfo.get(), version);
+        finalQueryInfo.compareAndSet(finalInfo, Optional.of(prunedQueryInfo));
+    }
+
+    public static QueryInfo pruneQueryInfo(QueryInfo queryInfo, NodeVersion version)
+    {
         Optional<StageInfo> prunedOutputStage = queryInfo.getOutputStage().map(outputStage -> new StageInfo(
                 outputStage.getStageId(),
                 outputStage.getState(),
@@ -1377,7 +1403,7 @@ public class QueryStateMachine
                 ImmutableMap.of(), // Remove tables
                 outputStage.getFailureCause()));
 
-        QueryInfo prunedQueryInfo = new QueryInfo(
+        return new QueryInfo(
                 queryInfo.getQueryId(),
                 queryInfo.getSession(),
                 queryInfo.getState(),
@@ -1413,7 +1439,6 @@ public class QueryStateMachine
                 queryInfo.getRetryPolicy(),
                 true,
                 version);
-        finalQueryInfo.compareAndSet(finalInfo, Optional.of(prunedQueryInfo));
     }
 
     private static QueryStats pruneQueryStats(QueryStats queryStats)
@@ -1431,6 +1456,7 @@ public class QueryStateMachine
                 queryStats.getAnalysisTime(),
                 queryStats.getPlanningTime(),
                 queryStats.getPlanningCpuTime(),
+                queryStats.getStartingTime(),
                 queryStats.getFinishingTime(),
                 queryStats.getTotalTasks(),
                 queryStats.getRunningTasks(),

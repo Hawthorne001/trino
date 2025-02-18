@@ -22,7 +22,6 @@ import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorPlugin;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
-import io.trino.filesystem.TrinoFileSystemFactory;
 import io.trino.plugin.iceberg.fileio.ForwardingFileIo;
 import io.trino.spi.Page;
 import io.trino.spi.QueryId;
@@ -64,6 +63,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.slice.SizeOf.instanceSize;
+import static io.trino.plugin.iceberg.IcebergTestUtils.getFileSystemFactory;
 import static io.trino.spi.function.table.ReturnTypeSpecification.GenericTable.GENERIC_TABLE;
 import static io.trino.spi.function.table.TableFunctionProcessorState.Finished.FINISHED;
 import static io.trino.spi.function.table.TableFunctionProcessorState.Processed.produced;
@@ -177,7 +177,7 @@ public abstract class BaseIcebergMaterializedViewTest
         assertThatThrownBy(() -> computeActual("CREATE MATERIALIZED VIEW materialized_view_with_property " +
                 "WITH (invalid_property = ARRAY['_date']) AS " +
                 "SELECT _bigint, _date FROM base_table1"))
-                .hasMessage("Catalog 'iceberg' materialized view property 'invalid_property' does not exist");
+                .hasMessage("line 1:64: Catalog 'iceberg' materialized view property 'invalid_property' does not exist");
     }
 
     @Test
@@ -216,6 +216,7 @@ public abstract class BaseIcebergMaterializedViewTest
                                 "   format = 'ORC',\n" +
                                 "   format_version = 2,\n" +
                                 "   location = '" + getSchemaDirectory() + "/test_mv_show_create-\\E[0-9a-f]+\\Q',\n" +
+                                "   max_commit_retry = 4,\n" +
                                 "   orc_bloom_filter_columns = ARRAY['_date'],\n" +
                                 "   orc_bloom_filter_fpp = 1E-1,\n" +
                                 "   partitioning = ARRAY['_date'],\n" +
@@ -434,7 +435,8 @@ public abstract class BaseIcebergMaterializedViewTest
                 .build();
 
         assertUpdate("CREATE TABLE mv_on_expired_base_table AS SELECT 10 a", 1);
-        assertUpdate("""
+        assertUpdate(
+                """
                 CREATE MATERIALIZED VIEW mv_on_expired_the_mv
                 GRACE PERIOD INTERVAL '0' SECOND
                 AS SELECT sum(a) s FROM mv_on_expired_base_table""");
@@ -468,7 +470,8 @@ public abstract class BaseIcebergMaterializedViewTest
     public void testMaterializedViewOnTableRolledBack()
     {
         assertUpdate("CREATE TABLE mv_on_rolled_back_base_table(a integer)");
-        assertUpdate("""
+        assertUpdate(
+                """
                 CREATE MATERIALIZED VIEW mv_on_rolled_back_the_mv
                 GRACE PERIOD INTERVAL '0' SECOND
                 AS SELECT sum(a) s FROM mv_on_rolled_back_base_table""");
@@ -480,7 +483,7 @@ public abstract class BaseIcebergMaterializedViewTest
 
         // Base MV on a snapshot "in the future"
         assertUpdate("REFRESH MATERIALIZED VIEW mv_on_rolled_back_the_mv", 1);
-        assertUpdate(format("CALL system.rollback_to_snapshot(CURRENT_SCHEMA, 'mv_on_rolled_back_base_table', %s)", firstSnapshot));
+        assertUpdate(format("ALTER TABLE mv_on_rolled_back_base_table EXECUTE rollback_to_snapshot(%s)", firstSnapshot));
 
         // View still can be queried
         assertThat(query("TABLE mv_on_rolled_back_the_mv"))
@@ -530,6 +533,7 @@ public abstract class BaseIcebergMaterializedViewTest
                         "   format = 'PARQUET',\n" +
                         "   format_version = 2,\n" +
                         "   location = '" + getSchemaDirectory() + "/materialized_view_window-\\E[0-9a-f]+\\Q',\n" +
+                        "   max_commit_retry = 4,\n" +
                         "   partitioning = ARRAY['_date'],\n" +
                         "   storage_schema = '" + schema + "'\n" +
                         ") AS\n" +
@@ -540,7 +544,7 @@ public abstract class BaseIcebergMaterializedViewTest
                         "  base_table1");
 
         assertQueryFails("INSERT INTO materialized_view_window VALUES (0, '2019-09-08'), (1, DATE '2019-09-09'), (2, DATE '2019-09-09')",
-                "Inserting into materialized views is not supported");
+                "line 1:1: Inserting into materialized views is not supported");
 
         computeScalar("EXPLAIN (TYPE LOGICAL) REFRESH MATERIALIZED VIEW materialized_view_window");
         computeScalar("EXPLAIN (TYPE DISTRIBUTED) REFRESH MATERIALIZED VIEW materialized_view_window");
@@ -777,7 +781,8 @@ public abstract class BaseIcebergMaterializedViewTest
         String materializedViewName = "test_materialized_view_storage_type_coercion" + randomNameSuffix();
         String sourceTableName = "test_materialized_view_storage" + randomNameSuffix();
 
-        assertUpdate(format("""
+        assertUpdate(format(
+                """
                 CREATE TABLE %s (
                     t_3 time(3),
                     t_9 time(9),
@@ -886,14 +891,14 @@ public abstract class BaseIcebergMaterializedViewTest
         assertUpdate("CREATE MATERIALIZED VIEW " + viewName + " AS SELECT * FROM TABLE(mock.system.sequence_function()) CROSS JOIN " + sourceTableName);
 
         List<MaterializedRow> materializedRows = computeActual("SELECT * FROM " + viewName).getMaterializedRows();
-        assertThat(materializedRows.size()).isEqualTo(1);
+        assertThat(materializedRows).hasSize(1);
         assertThat(materializedRows.get(0).getField(1)).isEqualTo(2);
         int valueFromPtf1 = (int) materializedRows.get(0).getField(0);
         assertFreshness(viewName, "STALE");
         assertThat(computeActual("SELECT last_fresh_time FROM system.metadata.materialized_views WHERE catalog_name = CURRENT_CATALOG AND schema_name = CURRENT_SCHEMA AND name = '" + viewName + "'").getOnlyValue()).isNull();
 
         materializedRows = computeActual("SELECT * FROM " + viewName).getMaterializedRows();
-        assertThat(materializedRows.size()).isEqualTo(1);
+        assertThat(materializedRows).hasSize(1);
         assertThat(materializedRows.get(0).getField(1)).isEqualTo(2);
         int valueFromPtf2 = (int) materializedRows.get(0).getField(0);
         assertThat(valueFromPtf2).isNotEqualTo(valueFromPtf1); // differs because PTF sequence_function is called directly as mv is considered stale
@@ -905,14 +910,14 @@ public abstract class BaseIcebergMaterializedViewTest
         ZonedDateTime lastFreshTime = (ZonedDateTime) computeActual("SELECT last_fresh_time FROM system.metadata.materialized_views WHERE catalog_name = CURRENT_CATALOG AND schema_name = CURRENT_SCHEMA AND name = '" + viewName + "'").getOnlyValue();
         assertThat(lastFreshTime).isNotNull();
         materializedRows = computeActual("SELECT * FROM " + viewName).getMaterializedRows();
-        assertThat(materializedRows.size()).isEqualTo(1);
+        assertThat(materializedRows).hasSize(1);
         assertThat(materializedRows.get(0).getField(1)).isEqualTo(2);
         int valueFromPtf3 = (int) materializedRows.get(0).getField(0);
         assertThat(valueFromPtf3).isNotEqualTo(valueFromPtf1);
         assertThat(valueFromPtf3).isNotEqualTo(valueFromPtf2);
 
         materializedRows = computeActual("SELECT * FROM " + viewName).getMaterializedRows();
-        assertThat(materializedRows.size()).isEqualTo(1);
+        assertThat(materializedRows).hasSize(1);
         assertThat(materializedRows.get(0).getField(1)).isEqualTo(2);
         int valueFromPtf4 = (int) materializedRows.get(0).getField(0);
         assertThat(valueFromPtf4).isNotEqualTo(valueFromPtf1);
@@ -939,6 +944,171 @@ public abstract class BaseIcebergMaterializedViewTest
         assertThat(result4).isNotEqualTo(result3);
     }
 
+    @Test
+    public void testIncrementalRefresh()
+    {
+        String sourceTableName = "source_table" + randomNameSuffix();
+        String materializedViewName = "test_materialized_view_" + randomNameSuffix();
+
+        Session defaultSession = getSession();
+        Session incrementalRefreshDisabled = Session.builder(getSession())
+                .setCatalogSessionProperty("iceberg", "incremental_refresh_enabled", "false")
+                .build();
+
+        String matViewDef = "SELECT a, b FROM %s WHERE a < 3 OR a > 5".formatted(sourceTableName);
+
+        // create source table and two identical MVs
+        assertUpdate("CREATE TABLE %s (a int, b varchar)".formatted(sourceTableName));
+        assertUpdate("INSERT INTO %s VALUES (1, 'abc'), (2, 'def')".formatted(sourceTableName), 2);
+        assertUpdate("CREATE MATERIALIZED VIEW %s_1 AS %s".formatted(materializedViewName, matViewDef));
+        assertUpdate("CREATE MATERIALIZED VIEW %s_2 AS %s".formatted(materializedViewName, matViewDef));
+
+        // execute first refresh: afterwards both MVs will contain: (1, 'abc'), (2, 'def')
+        assertUpdate("REFRESH MATERIALIZED VIEW %s_1".formatted(materializedViewName), 2);
+        assertUpdate("REFRESH MATERIALIZED VIEW %s_2".formatted(materializedViewName), 2);
+
+        // add some new rows to source
+        assertUpdate("INSERT INTO %s VALUES (3, 'ghi'), (4, 'jkl'), (5, 'mno'), (6, 'pqr')".formatted(sourceTableName), 4);
+
+        // will do incremental refresh, and only add: (6, 'pqr')
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s_1".formatted(materializedViewName), 1);
+        // will do full refresh, and (re)add: (1, 'abc'), (2, 'def'), (6, 'pqr')
+        assertUpdate(incrementalRefreshDisabled, "REFRESH MATERIALIZED VIEW %s_2".formatted(materializedViewName), 3);
+
+        // verify that view contents are the same
+        assertThat(query("TABLE %s_1".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr')");
+        assertThat(query("TABLE %s_2".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr')");
+
+        // cleanup
+        assertUpdate("DROP MATERIALIZED VIEW %s_1".formatted(materializedViewName));
+        assertUpdate("DROP MATERIALIZED VIEW %s_2".formatted(materializedViewName));
+        assertUpdate("DROP TABLE %s".formatted(sourceTableName));
+    }
+
+    @Test
+    public void testFullRefreshForUnion()
+    {
+        String sourceTableName = "source_table" + randomNameSuffix();
+        String materializedViewName = "test_materialized_view_" + randomNameSuffix();
+
+        Session defaultSession = getSession();
+
+        String matViewDef =
+                """
+                SELECT a, b FROM %s a WHERE a.a < 3 UNION ALL
+                SELECT * FROM %s b WHERE b.a > 5""".formatted(sourceTableName, sourceTableName);
+
+        // create source table and two identical MVs
+        assertUpdate("CREATE TABLE %s (a int, b varchar)".formatted(sourceTableName));
+        assertUpdate("INSERT INTO %s VALUES (1, 'abc'), (2, 'def')".formatted(sourceTableName), 2);
+        assertUpdate("CREATE MATERIALIZED VIEW %s AS %s".formatted(materializedViewName, matViewDef));
+
+        // execute first refresh: afterwards both MVs will contain: (1, 'abc'), (2, 'def')
+        assertUpdate("REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 2);
+
+        // add some new rows to source
+        assertUpdate("INSERT INTO %s VALUES (3, 'ghi'), (4, 'jkl'), (5, 'mno'), (6, 'pqr')".formatted(sourceTableName), 4);
+
+        // will do a full refresh
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 3);
+
+        // verify that view contents are the same
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr')");
+
+        // cleanup
+        assertUpdate("DROP MATERIALIZED VIEW %s".formatted(materializedViewName));
+        assertUpdate("DROP TABLE %s".formatted(sourceTableName));
+    }
+
+    @Test
+    public void testFullRefreshForUpdates()
+    {
+        String sourceTableName = "source_table" + randomNameSuffix();
+        String materializedViewName = "test_materialized_view_" + randomNameSuffix();
+
+        Session defaultSession = getSession();
+
+        String matViewDef = "SELECT a, b FROM %s WHERE a < 3 OR a > 5".formatted(sourceTableName);
+
+        // create source table and an MV
+        assertUpdate("CREATE TABLE %s (a int, b varchar)".formatted(sourceTableName));
+        assertUpdate("INSERT INTO %s VALUES (1, 'abc'), (2, 'def')".formatted(sourceTableName), 2);
+        assertUpdate("CREATE MATERIALIZED VIEW %s AS %s".formatted(materializedViewName, matViewDef));
+
+        // execute first refresh: afterwards both MVs will contain: (1, 'abc'), (2, 'def')
+        assertUpdate("REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 2);
+
+        // add some new rows to source
+        assertUpdate("INSERT INTO %s VALUES (3, 'ghi'), (4, 'jkl'), (5, 'mno'), (6, 'pqr')".formatted(sourceTableName), 4);
+
+        // will do incremental refresh, and only add: (6, 'pqr')
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 1);
+
+        // update one row and append one
+        assertUpdate("UPDATE %s SET b = 'updated' WHERE a = 1".formatted(sourceTableName), 1);
+        assertUpdate("INSERT INTO %s VALUES (7, 'stv')".formatted(sourceTableName), 1);
+
+        // will do full refresh due to the above update command
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 4);
+        // verify view contents
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'updated'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr'), (7, VARCHAR 'stv')");
+
+        // add some new row to source
+        assertUpdate("INSERT INTO %s VALUES (8, 'wxy')".formatted(sourceTableName), 1);
+        // will do incremental refresh now since refresh window now does not contain the delete anymore, and only add: (8, 'wxy')
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 1);
+        // verify view contents
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'updated'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr'), (7, VARCHAR 'stv'), (8, VARCHAR 'wxy')");
+
+        // cleanup
+        assertUpdate("DROP MATERIALIZED VIEW %s".formatted(materializedViewName));
+        assertUpdate("DROP TABLE %s".formatted(sourceTableName));
+    }
+
+    @Test
+    public void testRefreshWithCompaction()
+    {
+        String sourceTableName = "source_table" + randomNameSuffix();
+        String materializedViewName = "test_materialized_view_" + randomNameSuffix();
+
+        Session defaultSession = getSession();
+
+        String matViewDef = "SELECT a, b FROM %s WHERE a < 3 OR a > 5".formatted(sourceTableName);
+
+        // create source table and an MV
+        assertUpdate("CREATE TABLE %s (a int, b varchar)".formatted(sourceTableName));
+        assertUpdate("INSERT INTO %s VALUES (1, 'abc'), (2, 'def')".formatted(sourceTableName), 2);
+        assertUpdate("CREATE MATERIALIZED VIEW %s AS %s".formatted(materializedViewName, matViewDef));
+
+        // execute first refresh: afterwards both MVs will contain: (1, 'abc'), (2, 'def')
+        assertUpdate("REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 2);
+
+        // add some new rows to source
+        assertUpdate("INSERT INTO %s VALUES (3, 'ghi'), (4, 'jkl'), (5, 'mno'), (6, 'pqr')".formatted(sourceTableName), 4);
+
+        // will do incremental refresh, and only add: (6, 'pqr')
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 1);
+        // verify view contents
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr')");
+
+        // run compaction - after that, refresh will update 0 rows
+        assertUpdate(defaultSession, "ALTER TABLE %s EXECUTE OPTIMIZE".formatted(sourceTableName));
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 0);
+        // verify view contents
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr')");
+
+        // add some new rows to source
+        assertUpdate("INSERT INTO %s VALUES (7, 'stv'), (8, 'wxy')".formatted(sourceTableName), 2);
+        // will do incremental refresh, and only add: (7, 'stv'), (8, 'wxy')
+        assertUpdate(defaultSession, "REFRESH MATERIALIZED VIEW %s".formatted(materializedViewName), 2);
+        // verify view contents
+        assertThat(query("TABLE %s".formatted(materializedViewName))).matches("VALUES (1, VARCHAR 'abc'), (2, VARCHAR 'def'), (6, VARCHAR 'pqr'), (7, VARCHAR 'stv'), (8, VARCHAR 'wxy')");
+
+        // cleanup
+        assertUpdate("DROP MATERIALIZED VIEW %s".formatted(materializedViewName));
+        assertUpdate("DROP TABLE %s".formatted(sourceTableName));
+    }
+
     protected String getColumnComment(String tableName, String columnName)
     {
         return (String) computeScalar("SELECT comment FROM information_schema.columns WHERE table_schema = '" + getSession().getSchema().orElseThrow() + "' AND table_name = '" + tableName + "' AND column_name = '" + columnName + "'");
@@ -947,9 +1117,7 @@ public abstract class BaseIcebergMaterializedViewTest
     private TableMetadata getStorageTableMetadata(String materializedViewName)
     {
         QueryRunner queryRunner = getQueryRunner();
-        TrinoFileSystem fileSystemFactory = ((IcebergConnector) queryRunner.getCoordinator().getConnector("iceberg")).getInjector()
-                .getInstance(TrinoFileSystemFactory.class)
-                .create(ConnectorIdentity.ofUser("test"));
+        TrinoFileSystem fileSystemFactory = getFileSystemFactory(queryRunner).create(ConnectorIdentity.ofUser("test"));
         Location metadataLocation = Location.of(getStorageMetadataLocation(materializedViewName));
         return TableMetadataParser.read(new ForwardingFileIo(fileSystemFactory), metadataLocation.toString());
     }
@@ -1010,7 +1178,7 @@ public abstract class BaseIcebergMaterializedViewTest
             if (finished.get()) {
                 return FINISHED;
             }
-            BlockBuilder builder = INTEGER.createBlockBuilder(null, 1);
+            BlockBuilder builder = INTEGER.createFixedSizeBlockBuilder(1);
             INTEGER.writeInt(builder, generator.getAndIncrement());
             finished.set(true);
             return produced(new Page(builder.build()));

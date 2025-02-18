@@ -17,10 +17,12 @@ import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
 import io.trino.connector.system.GlobalSystemConnector;
+import io.trino.spi.RefreshType;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
@@ -30,6 +32,7 @@ import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorCapabilities;
 import io.trino.spi.connector.ConnectorOutputMetadata;
 import io.trino.spi.connector.ConnectorTableMetadata;
@@ -181,7 +184,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public TableHandle makeCompatiblePartitioning(Session session, TableHandle table, PartitioningHandle partitioningHandle)
+    public Optional<TableHandle> applyPartitioning(Session session, TableHandle tableHandle, Optional<PartitioningHandle> partitioning, List<ColumnHandle> columns)
     {
         throw new UnsupportedOperationException();
     }
@@ -337,7 +340,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column)
+    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column, ColumnPosition position)
     {
         throw new UnsupportedOperationException();
     }
@@ -487,7 +490,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles)
+    public InsertTableHandle beginRefreshMaterializedView(Session session, TableHandle tableHandle, List<TableHandle> sourceTableHandles, RefreshType refreshType)
     {
         throw new UnsupportedOperationException();
     }
@@ -548,13 +551,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public MergeHandle beginMerge(Session session, TableHandle tableHandle)
+    public MergeHandle beginMerge(Session session, TableHandle tableHandle, Multimap<Integer, ColumnHandle> updateCaseColumnHandles)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void finishMerge(Session session, MergeHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(Session session, MergeHandle tableHandle, List<TableHandle> sourceTableHandles, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         throw new UnsupportedOperationException();
     }
@@ -585,6 +588,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public Optional<ViewDefinition> getView(Session session, QualifiedObjectName viewName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean isView(Session session, QualifiedObjectName viewName)
     {
         throw new UnsupportedOperationException();
     }
@@ -1008,6 +1017,12 @@ public abstract class AbstractMockMetadata
 
     @Override
     public OptionalInt getMaxWriterTasks(Session session, String catalogName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public boolean allowSplittingReadIntoMultipleSubQueries(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
     }

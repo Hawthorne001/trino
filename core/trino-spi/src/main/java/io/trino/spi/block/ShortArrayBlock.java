@@ -198,12 +198,6 @@ public final class ShortArrayBlock
     }
 
     @Override
-    public String getEncodingName()
-    {
-        return ShortArrayBlockEncoding.NAME;
-    }
-
-    @Override
     public ShortArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
@@ -221,6 +215,12 @@ public final class ShortArrayBlock
     public String toString()
     {
         return "ShortArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     int getRawValuesOffset()

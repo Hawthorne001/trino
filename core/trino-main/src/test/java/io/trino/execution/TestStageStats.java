@@ -23,6 +23,7 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.eventlistener.StageGcStatistics;
+import io.trino.spi.metrics.Metrics;
 import org.joda.time.DateTime;
 import org.junit.jupiter.api.Test;
 
@@ -91,11 +92,12 @@ public class TestStageStats
             new Duration(202, NANOSECONDS),
 
             DataSize.ofBytes(34),
-            Optional.of(getTDigestHistogram(10)),
+            Optional.of(new io.trino.execution.DistributionSnapshot(getTDigestHistogram(10))),
             DataSize.ofBytes(35),
             DataSize.ofBytes(36),
             37,
             38,
+            Metrics.EMPTY,
 
             new Duration(203, NANOSECONDS),
             new Duration(204, NANOSECONDS),
@@ -182,7 +184,7 @@ public class TestStageStats
         assertThat(actual.getFailedInputBlockedTime()).isEqualTo(new Duration(202, NANOSECONDS));
 
         assertThat(actual.getBufferedDataSize()).isEqualTo(DataSize.ofBytes(34));
-        assertThat(actual.getOutputBufferUtilization().get().getMax()).isEqualTo(9.0);
+        assertThat(actual.getOutputBufferUtilization().get().max()).isEqualTo(9.0);
         assertThat(actual.getOutputDataSize()).isEqualTo(DataSize.ofBytes(35));
         assertThat(actual.getFailedOutputDataSize()).isEqualTo(DataSize.ofBytes(36));
         assertThat(actual.getOutputPositions()).isEqualTo(37);

@@ -15,13 +15,15 @@ package io.trino.plugin.bigquery;
 
 import com.google.cloud.bigquery.storage.v1.BigQueryReadClient;
 import com.google.cloud.bigquery.storage.v1.ReadRowsResponse;
+import com.google.common.collect.ImmutableMap;
 import com.google.protobuf.ByteString;
 import io.airlift.log.Logger;
+import io.trino.plugin.base.metrics.LongCount;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.metrics.Metrics;
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
 import org.apache.arrow.vector.ipc.ReadChannel;
 import org.apache.arrow.vector.ipc.message.ArrowRecordBatch;
 import org.apache.arrow.vector.ipc.message.MessageSerializer;
@@ -32,10 +34,14 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static java.util.Objects.requireNonNull;
 
 public class BigQueryStorageArrowPageSource
@@ -43,34 +49,38 @@ public class BigQueryStorageArrowPageSource
 {
     private static final Logger log = Logger.get(BigQueryStorageArrowPageSource.class);
 
-    private static final BufferAllocator allocator = new RootAllocator(RootAllocator
-            .configBuilder()
-            .from(RootAllocator.defaultConfig())
-            .maxAllocation(Integer.MAX_VALUE)
-            .build());
-
     private final AtomicLong readBytes = new AtomicLong();
+    private final AtomicLong readTimeNanos = new AtomicLong();
     private final BigQueryReadClient bigQueryReadClient;
-    private final BigQuerySplit split;
-    private final Iterator<ReadRowsResponse> responses;
+    private final ExecutorService executor;
+    private final String streamName;
     private final BigQueryArrowToPageConverter bigQueryArrowToPageConverter;
     private final BufferAllocator streamBufferAllocator;
     private final PageBuilder pageBuilder;
+    private final Iterator<ReadRowsResponse> responses;
+
+    private CompletableFuture<ReadRowsResponse> nextResponse;
+    private boolean finished;
 
     public BigQueryStorageArrowPageSource(
             BigQueryTypeManager typeManager,
             BigQueryReadClient bigQueryReadClient,
+            ExecutorService executor,
+            BigQueryArrowBufferAllocator bufferAllocator,
             int maxReadRowsRetries,
             BigQuerySplit split,
             List<BigQueryColumnHandle> columns)
     {
         this.bigQueryReadClient = requireNonNull(bigQueryReadClient, "bigQueryReadClient is null");
-        this.split = requireNonNull(split, "split is null");
+        this.executor = requireNonNull(executor, "executor is null");
+        requireNonNull(split, "split is null");
+        this.streamName = split.streamName();
         requireNonNull(columns, "columns is null");
-        Schema schema = deserializeSchema(split.getSchemaString());
-        log.debug("Starting to read from %s", split.getStreamName());
-        responses = new ReadRowsHelper(bigQueryReadClient, split.getStreamName(), maxReadRowsRetries).readRows();
-        this.streamBufferAllocator = allocator.newChildAllocator(split.getStreamName(), 1024, Long.MAX_VALUE);
+        Schema schema = deserializeSchema(split.schemaString());
+        log.debug("Starting to read from %s", split.streamName());
+        responses = new ReadRowsHelper(bigQueryReadClient, split.streamName(), maxReadRowsRetries).readRows();
+        nextResponse = CompletableFuture.supplyAsync(this::getResponse, executor);
+        this.streamBufferAllocator = bufferAllocator.newChildAllocator(split);
         this.bigQueryArrowToPageConverter = new BigQueryArrowToPageConverter(typeManager, streamBufferAllocator, schema, columns);
         this.pageBuilder = new PageBuilder(columns.stream()
                 .map(BigQueryColumnHandle::trinoType)
@@ -86,40 +96,43 @@ public class BigQueryStorageArrowPageSource
     @Override
     public long getReadTimeNanos()
     {
-        return 0;
+        return readTimeNanos.get();
     }
 
     @Override
     public boolean isFinished()
     {
-        return !responses.hasNext();
+        return finished;
     }
 
     @Override
     public Page getNextPage()
     {
         checkState(pageBuilder.isEmpty(), "PageBuilder is not empty at the beginning of a new page");
-        if (!responses.hasNext()) {
+        ReadRowsResponse response;
+        try {
+            response = getFutureValue(nextResponse);
+        }
+        catch (NoSuchElementException ignored) {
+            finished = true;
             return null;
         }
-        ReadRowsResponse response = responses.next();
+        nextResponse = CompletableFuture.supplyAsync(this::getResponse, executor);
+        long start = System.nanoTime();
         try (ArrowRecordBatch batch = deserializeResponse(streamBufferAllocator, response)) {
             bigQueryArrowToPageConverter.convert(pageBuilder, batch);
         }
 
         Page page = pageBuilder.build();
         pageBuilder.reset();
+        readTimeNanos.addAndGet(System.nanoTime() - start);
         return page;
     }
 
     @Override
     public long getMemoryUsage()
     {
-        long memoryUsage = streamBufferAllocator.getAllocatedMemory();
-        if (split.getDataSize().isPresent()) {
-            memoryUsage += split.getDataSize().getAsInt() + pageBuilder.getSizeInBytes();
-        }
-        return memoryUsage;
+        return streamBufferAllocator.getAllocatedMemory() + pageBuilder.getRetainedSizeInBytes();
     }
 
     @Override
@@ -127,14 +140,37 @@ public class BigQueryStorageArrowPageSource
     {
         streamBufferAllocator.close();
         bigQueryArrowToPageConverter.close();
+        nextResponse.cancel(true);
         bigQueryReadClient.close();
+    }
+
+    @Override
+    public CompletableFuture<?> isBlocked()
+    {
+        return nextResponse;
+    }
+
+    @Override
+    public Metrics getMetrics()
+    {
+        return new Metrics(ImmutableMap.of(
+                "ArrowAllocatedMemory", new LongCount(streamBufferAllocator.getAllocatedMemory()),
+                "ArrowPeakAllocatedMemory", new LongCount(streamBufferAllocator.getPeakMemoryAllocation())));
+    }
+
+    private ReadRowsResponse getResponse()
+    {
+        long start = System.nanoTime();
+        ReadRowsResponse response = responses.next();
+        readTimeNanos.addAndGet(System.nanoTime() - start);
+        return response;
     }
 
     private ArrowRecordBatch deserializeResponse(BufferAllocator allocator, ReadRowsResponse response)
     {
         int serializedSize = response.getArrowRecordBatch().getSerializedSize();
         long totalReadSize = readBytes.addAndGet(serializedSize);
-        log.debug("Read %d bytes (total %d) from %s", serializedSize, totalReadSize, split.getStreamName());
+        log.debug("Read %d bytes (total %d) from %s", serializedSize, totalReadSize, streamName);
 
         try {
             return MessageSerializer.deserializeRecordBatch(readChannelForByteString(response.getArrowRecordBatch().getSerializedRecordBatch()), allocator);

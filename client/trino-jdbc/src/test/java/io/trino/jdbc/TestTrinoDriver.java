@@ -69,8 +69,6 @@ import java.util.regex.Pattern;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.testing.Assertions.assertContains;
-import static io.airlift.testing.Assertions.assertInstanceOf;
 import static io.trino.execution.QueryState.FAILED;
 import static io.trino.execution.QueryState.RUNNING;
 import static java.lang.Float.POSITIVE_INFINITY;
@@ -245,10 +243,10 @@ public class TestTrinoDriver
                     assertThat(rs.getBigDecimal(8, 6)).isEqualTo(new BigDecimal(".123457"));
                     assertThat(rs.getBigDecimal("_decimal_long", 6)).isEqualTo(new BigDecimal(".123457"));
 
-                    assertInstanceOf(rs.getObject(9), byte[].class);
-                    assertInstanceOf(rs.getObject("_hll"), byte[].class);
-                    assertInstanceOf(rs.getBytes(9), byte[].class);
-                    assertInstanceOf(rs.getBytes("_hll"), byte[].class);
+                    assertThat(rs.getObject(9)).isInstanceOf(byte[].class);
+                    assertThat(rs.getObject("_hll")).isInstanceOf(byte[].class);
+                    assertThat(rs.getBytes(9)).isInstanceOf(byte[].class);
+                    assertThat(rs.getBytes("_hll")).isInstanceOf(byte[].class);
 
                     assertThat(rs.getObject(10)).isEqualTo("foo  ");
                     assertThat(rs.getObject("_char")).isEqualTo("foo  ");
@@ -401,10 +399,7 @@ public class TestTrinoDriver
                 .contains("{name=user, required=false}")
                 .contains("{name=password, required=false}")
                 .contains("{name=accessToken, required=false}")
-                .contains("{name=SSL, required=false, choices=[true, false]}");
-
-        assertThat(infos).extracting(x -> x.name)
-                .doesNotContain("SSLVerification", "SSLTrustStorePath");
+                .contains("{name=SSL, value=false, required=false, choices=[true, false]}");
     }
 
     @Test
@@ -422,7 +417,7 @@ public class TestTrinoDriver
                 .extracting(TestTrinoDriver::driverPropertyInfoToString)
                 .contains("{name=user, value=test, required=false}")
                 .contains("{name=SSL, value=true, required=false, choices=[true, false]}")
-                .contains("{name=SSLVerification, required=false, choices=[FULL, CA, NONE]}")
+                .contains("{name=SSLVerification, value=FULL, required=false, choices=[FULL, CA, NONE]}")
                 .contains("{name=SSLTrustStorePath, required=false}");
     }
 
@@ -875,6 +870,13 @@ public class TestTrinoDriver
                         .put("assumeLiteralUnderscoreInMetadataCallsForNonConformingClients", "true")
                         .buildOrThrow())))
                 .isNotNull();
+
+        assertThat(DriverManager.getConnection(jdbcUrl(),
+                toProperties(ImmutableMap.<String, String>builder()
+                        .put("user", "test")
+                        .put("validateConnection", "false")
+                        .buildOrThrow())))
+                .isNotNull();
     }
 
     @Test
@@ -1001,7 +1003,7 @@ public class TestTrinoDriver
     {
         CountDownLatch queryFinished = new CountDownLatch(1);
         AtomicReference<Throwable> queryFailure = new AtomicReference<>();
-        String queryUuid = "/* " + UUID.randomUUID().toString() + " */";
+        String queryUuid = "/* " + UUID.randomUUID() + " */";
 
         try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement()) {
@@ -1079,7 +1081,7 @@ public class TestTrinoDriver
         // make sure the query timed out
         queryFinished.await();
         assertThat(queryFailure.get()).isNotNull();
-        assertContains(queryFailure.get().getMessage(), "Query exceeded maximum time limit of 1.00s");
+        assertThat(queryFailure.get()).hasMessageContaining("Query exceeded maximum time limit of 1.00s");
 
         try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement()) {

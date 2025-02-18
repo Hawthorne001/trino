@@ -16,6 +16,7 @@ package io.trino.execution;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.node.NodeInfo;
 import io.airlift.stats.TestingGcMonitor;
 import io.airlift.tracing.Tracing;
@@ -39,6 +40,7 @@ import io.trino.memory.NodeMemoryConfig;
 import io.trino.memory.QueryContext;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.metadata.InternalNode;
+import io.trino.metadata.LanguageFunctionEngineManager;
 import io.trino.metadata.WorkerLanguageFunctionProvider;
 import io.trino.operator.DirectExchangeClient;
 import io.trino.operator.DirectExchangeClientSupplier;
@@ -145,14 +147,14 @@ public abstract class BaseTestSqlTaskManager
 
             BufferResult results = sqlTaskManager.getTaskResults(taskId, OUT, 0, DataSize.of(1, Unit.MEGABYTE)).getResultsFuture().get();
             assertThat(results.isBufferComplete()).isFalse();
-            assertThat(results.getSerializedPages().size()).isEqualTo(1);
+            assertThat(results.getSerializedPages()).hasSize(1);
             assertThat(getSerializedPagePositionCount(results.getSerializedPages().get(0))).isEqualTo(1);
 
             for (boolean moreResults = true; moreResults; moreResults = !results.isBufferComplete()) {
                 results = sqlTaskManager.getTaskResults(taskId, OUT, results.getToken() + results.getSerializedPages().size(), DataSize.of(1, Unit.MEGABYTE)).getResultsFuture().get();
             }
             assertThat(results.isBufferComplete()).isTrue();
-            assertThat(results.getSerializedPages().size()).isEqualTo(0);
+            assertThat(results.getSerializedPages()).isEmpty();
 
             // complete the task by calling destroy on it
             TaskInfo info = sqlTaskManager.destroyTaskResults(taskId, OUT);
@@ -324,7 +326,7 @@ public abstract class BaseTestSqlTaskManager
                 new EmbedVersion("testversion"),
                 new NoConnectorServicesProvider(),
                 createTestingPlanner(),
-                new WorkerLanguageFunctionProvider(),
+                new WorkerLanguageFunctionProvider(new LanguageFunctionEngineManager()),
                 new MockLocationFactory(),
                 taskExecutor,
                 createTestSplitMonitor(),
@@ -337,7 +339,7 @@ public abstract class BaseTestSqlTaskManager
                 new NodeSpillConfig(),
                 new TestingGcMonitor(),
                 noopTracer(),
-                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer()));
+                new ExchangeManagerRegistry(OpenTelemetry.noop(), Tracing.noopTracer(), new SecretsResolver(ImmutableMap.of())));
     }
 
     private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, ImmutableSet<ScheduledSplit> splits, OutputBuffers outputBuffers)

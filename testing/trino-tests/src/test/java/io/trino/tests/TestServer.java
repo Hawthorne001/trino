@@ -25,8 +25,12 @@ import io.airlift.http.client.Request;
 import io.airlift.http.client.StatusResponseHandler.StatusResponse;
 import io.airlift.http.client.jetty.JettyHttpClient;
 import io.airlift.json.JsonCodec;
+import io.airlift.json.JsonCodecFactory;
+import io.airlift.json.ObjectMapperProvider;
+import io.trino.client.QueryDataClientJacksonModule;
 import io.trino.client.QueryError;
 import io.trino.client.QueryResults;
+import io.trino.client.ResultRowsDecoder;
 import io.trino.plugin.memory.MemoryPlugin;
 import io.trino.server.BasicQueryInfo;
 import io.trino.server.testing.TestingTrinoServer;
@@ -65,7 +69,6 @@ import static io.airlift.http.client.Request.Builder.prepareHead;
 import static io.airlift.http.client.Request.Builder.preparePost;
 import static io.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
 import static io.airlift.http.client.StatusResponseHandler.createStatusResponseHandler;
-import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.airlift.testing.Closeables.closeAll;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
 import static io.trino.SystemSessionProperties.MAX_HASH_PARTITION_COUNT;
@@ -92,7 +95,10 @@ import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 @Execution(CONCURRENT)
 public class TestServer
 {
-    private static final JsonCodec<QueryResults> QUERY_RESULTS_CODEC = jsonCodec(QueryResults.class);
+    private static final JsonCodec<QueryResults> QUERY_RESULTS_CODEC = new JsonCodecFactory(new ObjectMapperProvider()
+            .withModules(Set.of(new QueryDataClientJacksonModule())))
+            .jsonCodec(QueryResults.class);
+
     private TestingTrinoServer server;
     private HttpClient client;
 
@@ -143,6 +149,7 @@ public class TestServer
 
     @Test
     public void testFirstResponseColumns()
+            throws Exception
     {
         List<QueryResults> queryResults = postQuery(request -> request
                 .setBodyGenerator(createStaticBodyGenerator("show catalogs", UTF_8))
@@ -169,7 +176,10 @@ public class TestServer
         assertThat(data).isPresent();
 
         QueryResults results = data.orElseThrow();
-        assertThat(results.getData()).containsOnly(ImmutableList.of("memory"), ImmutableList.of("system"));
+
+        try (ResultRowsDecoder decoder = new ResultRowsDecoder()) {
+            assertThat(decoder.toRows(results)).containsOnly(ImmutableList.of("memory"), ImmutableList.of("system"));
+        }
     }
 
     @Test
@@ -199,7 +209,12 @@ public class TestServer
                 .peek(result -> assertThat(result.getError()).isNull())
                 .peek(results -> {
                     if (results.getData() != null) {
-                        data.addAll(results.getData());
+                        try (ResultRowsDecoder decoder = new ResultRowsDecoder()) {
+                            data.addAll(decoder.toRows(results));
+                        }
+                        catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
                     }
                 })
                 .collect(last());
@@ -279,7 +294,7 @@ public class TestServer
                     String.join(" || ", Collections.nCopies(10, array)) +
                     "FROM " + tableName;
 
-            checkVersionOnError(query, "TrinoException: Compiler failed(?s:.*)at io.trino.sql.gen.ExpressionCompiler.compile");
+            checkVersionOnError(query, "TrinoException: Query exceeded maximum columns(?s:.*)at io.trino.sql.gen.PageFunctionCompiler.compileProjectionInternal");
         }
     }
 

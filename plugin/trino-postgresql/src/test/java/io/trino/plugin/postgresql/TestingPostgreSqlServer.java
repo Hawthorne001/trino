@@ -17,10 +17,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
 import io.trino.plugin.jdbc.RemoteDatabaseEvent;
 import io.trino.plugin.jdbc.RemoteLogTracingEvent;
-import io.trino.testing.ResourcePresence;
 import org.intellij.lang.annotations.Language;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.containers.output.OutputFrame;
+import org.testcontainers.utility.DockerImageName;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -53,6 +53,8 @@ import static org.testcontainers.containers.PostgreSQLContainer.POSTGRESQL_PORT;
 public class TestingPostgreSqlServer
         implements AutoCloseable
 {
+    public static final String DEFAULT_IMAGE_NAME = "postgres:12";
+
     private static final String USER = "test";
     private static final String PASSWORD = "test";
     private static final String DATABASE = "tpch";
@@ -77,7 +79,17 @@ public class TestingPostgreSqlServer
     public TestingPostgreSqlServer(boolean shouldExposeFixedPorts)
     {
         // Use the oldest supported PostgreSQL version
-        dockerContainer = new PostgreSQLContainer<>("postgres:11")
+        this(DEFAULT_IMAGE_NAME, shouldExposeFixedPorts);
+    }
+
+    public TestingPostgreSqlServer(String dockerImageName, boolean shouldExposeFixedPorts)
+    {
+        this(DockerImageName.parse(dockerImageName), shouldExposeFixedPorts);
+    }
+
+    public TestingPostgreSqlServer(DockerImageName dockerImageName, boolean shouldExposeFixedPorts)
+    {
+        dockerContainer = new PostgreSQLContainer<>(dockerImageName)
                 .withStartupAttempts(3)
                 .withDatabaseName(DATABASE)
                 .withUsername(USER)
@@ -234,12 +246,6 @@ public class TestingPostgreSqlServer
         catch (IOException ioe) {
             throw new UncheckedIOException(ioe);
         }
-    }
-
-    @ResourcePresence
-    public boolean isRunning()
-    {
-        return dockerContainer.getContainerId() != null;
     }
 
     public static class DatabaseEventsRecorder

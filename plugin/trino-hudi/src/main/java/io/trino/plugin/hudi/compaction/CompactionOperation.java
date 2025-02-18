@@ -54,16 +54,6 @@ public class CompactionOperation
         this.bootstrapFilePath = requireNonNull(bootstrapFilePath, "bootstrapFilePath is null");
     }
 
-    public String getFileId()
-    {
-        return id.getFileId();
-    }
-
-    public String getPartitionPath()
-    {
-        return id.getPartitionPath();
-    }
-
     public HudiFileGroupId getFileGroupId()
     {
         return id;

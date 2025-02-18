@@ -69,6 +69,7 @@ public class TestQueryStats
                     1833,
                     Metrics.EMPTY,
                     Metrics.EMPTY,
+                    Metrics.EMPTY,
                     succinctBytes(118L),
                     new Duration(119, NANOSECONDS),
                     120L,
@@ -107,6 +108,7 @@ public class TestQueryStats
                     succinctBytes(216L),
                     217L,
                     2833,
+                    Metrics.EMPTY,
                     Metrics.EMPTY,
                     Metrics.EMPTY,
                     succinctBytes(218L),
@@ -149,6 +151,7 @@ public class TestQueryStats
                     3833,
                     Metrics.EMPTY,
                     Metrics.EMPTY,
+                    Metrics.EMPTY,
                     succinctBytes(318L),
                     new Duration(319, NANOSECONDS),
                     320L,
@@ -189,6 +192,7 @@ public class TestQueryStats
 
             new Duration(100, NANOSECONDS),
             new Duration(150, NANOSECONDS),
+            new Duration(160, NANOSECONDS),
             new Duration(200, NANOSECONDS),
 
             9,
@@ -302,6 +306,7 @@ public class TestQueryStats
 
         assertThat(actual.getPlanningTime()).isEqualTo(new Duration(100, NANOSECONDS));
         assertThat(actual.getPlanningCpuTime()).isEqualTo(new Duration(150, NANOSECONDS));
+        assertThat(actual.getStartingTime()).isEqualTo(new Duration(160, NANOSECONDS));
         assertThat(actual.getFinishingTime()).isEqualTo(new Duration(200, NANOSECONDS));
 
         assertThat(actual.getTotalTasks()).isEqualTo(9);
@@ -370,7 +375,7 @@ public class TestQueryStats
         assertThat(actual.getPhysicalWrittenDataSize()).isEqualTo(DataSize.ofBytes(47));
         assertThat(actual.getFailedPhysicalWrittenDataSize()).isEqualTo(DataSize.ofBytes(48));
 
-        assertThat(actual.getStageGcStatistics().size()).isEqualTo(1);
+        assertThat(actual.getStageGcStatistics()).hasSize(1);
         StageGcStatistics gcStatistics = actual.getStageGcStatistics().get(0);
         assertThat(gcStatistics.getStageId()).isEqualTo(101);
         assertThat(gcStatistics.getTasks()).isEqualTo(102);
@@ -384,7 +389,7 @@ public class TestQueryStats
         assertThat(58).isEqualTo(actual.getLogicalWrittenDataSize().toBytes());
 
         assertThat(DynamicFiltersStats.EMPTY).isEqualTo(actual.getDynamicFiltersStats());
-        assertThat(actual.getOptimizerRulesSummaries().size()).isEqualTo(optimizerRulesSummaries.size());
+        assertThat(actual.getOptimizerRulesSummaries()).hasSize(optimizerRulesSummaries.size());
         for (int i = 0, end = optimizerRulesSummaries.size(); i < end; i++) {
             QueryPlanOptimizerStatistics actualRule = actual.getOptimizerRulesSummaries().get(i);
             QueryPlanOptimizerStatistics expectedRule = optimizerRulesSummaries.get(i);

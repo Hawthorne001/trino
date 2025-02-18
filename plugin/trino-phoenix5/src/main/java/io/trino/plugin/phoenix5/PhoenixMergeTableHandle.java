@@ -16,41 +16,25 @@ package io.trino.plugin.phoenix5;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
+import io.trino.plugin.jdbc.JdbcMergeTableHandle;
 import io.trino.plugin.jdbc.JdbcTableHandle;
-import io.trino.spi.connector.ConnectorMergeTableHandle;
+import io.trino.spi.connector.ColumnHandle;
 
-public record PhoenixMergeTableHandle(JdbcTableHandle tableHandle, PhoenixOutputTableHandle phoenixOutputTableHandle, JdbcColumnHandle mergeRowIdColumnHandle)
-        implements ConnectorMergeTableHandle
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+
+public class PhoenixMergeTableHandle
+        extends JdbcMergeTableHandle
 {
     @JsonCreator
     public PhoenixMergeTableHandle(
             @JsonProperty("tableHandle") JdbcTableHandle tableHandle,
-            @JsonProperty("phoenixOutputTableHandle") PhoenixOutputTableHandle phoenixOutputTableHandle,
-            @JsonProperty("mergeRowIdColumnHandle") JdbcColumnHandle mergeRowIdColumnHandle)
+            @JsonProperty("outputTableHandle") PhoenixOutputTableHandle phoenixOutputTableHandle,
+            @JsonProperty("primaryKeys") List<JdbcColumnHandle> primaryKeys,
+            @JsonProperty("dataColumns") List<JdbcColumnHandle> dataColumns,
+            @JsonProperty("updateCaseColumns") Map<Integer, Collection<ColumnHandle>> updateCaseColumns)
     {
-        this.tableHandle = tableHandle;
-        this.phoenixOutputTableHandle = phoenixOutputTableHandle;
-        this.mergeRowIdColumnHandle = mergeRowIdColumnHandle;
-    }
-
-    @JsonProperty
-    @Override
-    public JdbcTableHandle getTableHandle()
-    {
-        return tableHandle;
-    }
-
-    @Override
-    @JsonProperty
-    public PhoenixOutputTableHandle phoenixOutputTableHandle()
-    {
-        return phoenixOutputTableHandle;
-    }
-
-    @Override
-    @JsonProperty
-    public JdbcColumnHandle mergeRowIdColumnHandle()
-    {
-        return mergeRowIdColumnHandle;
+        super(tableHandle, phoenixOutputTableHandle, primaryKeys, dataColumns, updateCaseColumns);
     }
 }

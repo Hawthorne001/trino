@@ -34,6 +34,7 @@ import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcJoinCondition;
+import io.trino.plugin.jdbc.JdbcMetadata;
 import io.trino.plugin.jdbc.JdbcSortItem;
 import io.trino.plugin.jdbc.JdbcStatisticsConfig;
 import io.trino.plugin.jdbc.JdbcTableHandle;
@@ -66,6 +67,7 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinCondition;
@@ -110,9 +112,11 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.util.AbstractMap.SimpleEntry;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
@@ -125,8 +129,8 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static com.mysql.cj.exceptions.MysqlErrorNumbers.ER_NO_SUCH_TABLE;
+import static com.mysql.cj.exceptions.MysqlErrorNumbers.ER_TABLE_EXISTS_ERROR;
 import static com.mysql.cj.exceptions.MysqlErrorNumbers.ER_UNKNOWN_TABLE;
-import static com.mysql.cj.exceptions.MysqlErrorNumbers.SQL_STATE_ER_TABLE_EXISTS_ERROR;
 import static io.airlift.json.JsonCodec.jsonCodec;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
@@ -308,12 +312,9 @@ public class MySqlClient
     }
 
     @Override
-    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, JdbcTableHandle tableHandle)
+    protected Map<String, CaseSensitivity> getCaseSensitivityForColumns(ConnectorSession session, Connection connection, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
     {
-        if (tableHandle.isSynthetic()) {
-            return ImmutableMap.of();
-        }
-        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(tableHandle.asPlainTable().getRemoteTableName())), ImmutableList.of());
+        PreparedQuery preparedQuery = new PreparedQuery(format("SELECT * FROM %s", quoted(remoteTableName)), ImmutableList.of());
 
         try (PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
             ResultSetMetaData metadata = preparedStatement.getMetaData();
@@ -326,7 +327,7 @@ public class MySqlClient
         }
         catch (SQLException e) {
             if (e.getErrorCode() == ER_NO_SUCH_TABLE) {
-                throw new TableNotFoundException(tableHandle.asPlainTable().getSchemaTableName());
+                throw new TableNotFoundException(schemaTableName);
             }
             throw new TrinoException(JDBC_ERROR, "Failed to get case sensitivity for columns. " + firstNonNull(e.getMessage(), e), e);
         }
@@ -429,6 +430,19 @@ public class MySqlClient
                 null,
                 escapeObjectNameForMetadataQuery(tableName, metadata.getSearchStringEscape()).orElse(null),
                 getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
+    }
+
+    @Override
+    protected ResultSet getAllTableColumns(Connection connection, Optional<String> remoteSchemaName)
+            throws SQLException
+    {
+        // MySQL maps their "database" to SQL catalogs and does not have schemas
+        DatabaseMetaData metadata = connection.getMetaData();
+        return metadata.getColumns(
+                remoteSchemaName.orElse(null),
+                null,
+                null,
+                null);
     }
 
     @Override
@@ -888,8 +902,47 @@ public class MySqlClient
             createTable(session, tableMetadata, tableMetadata.getTable().getTableName());
         }
         catch (SQLException e) {
-            boolean exists = SQL_STATE_ER_TABLE_EXISTS_ERROR.equals(e.getSQLState());
-            throw new TrinoException(exists ? ALREADY_EXISTS : JDBC_ERROR, e);
+            if (e.getErrorCode() == ER_TABLE_EXISTS_ERROR) {
+                throw new TrinoException(ALREADY_EXISTS, e);
+            }
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column, ColumnPosition position)
+    {
+        verify(handle.getAuthorization().isEmpty(), "Unexpected authorization is required for table: %s", handle);
+
+        RemoteTableName table = handle.asPlainTable().getRemoteTableName();
+
+        switch (position) {
+            case ColumnPosition.First _ -> addColumn(session, table, column, "FIRST");
+            case ColumnPosition.After after -> addColumn(session, table, column, "AFTER " + quoted(after.columnName()));
+            case ColumnPosition.Last _ -> addColumn(session, table, column, "");
+        }
+    }
+
+    private void addColumn(ConnectorSession session, RemoteTableName table, ColumnMetadata column, String position)
+    {
+        if (column.getComment() != null) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support adding columns with comments");
+        }
+
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            verify(connection.getAutoCommit());
+            String columnName = column.getName();
+            verifyColumnName(connection.getMetaData(), columnName);
+            String remoteColumnName = getIdentifierMapping().toRemoteColumnName(getRemoteIdentifiers(connection), columnName);
+            String sql = format(
+                    "ALTER TABLE %s ADD %s %s",
+                    quoted(table),
+                    getColumnDefinitionSql(session, column, remoteColumnName),
+                    position);
+            execute(session, connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
@@ -960,6 +1013,12 @@ public class MySqlClient
 
     @Override
     public boolean isLimitGuaranteed(ConnectorSession session)
+    {
+        return true;
+    }
+
+    @Override
+    public boolean supportsMerge()
     {
         return true;
     }
@@ -1055,7 +1114,7 @@ public class MySqlClient
     @Override
     protected boolean isSupportedJoinCondition(ConnectorSession session, JdbcJoinCondition joinCondition)
     {
-        if (joinCondition.getOperator() == JoinCondition.Operator.IS_DISTINCT_FROM) {
+        if (joinCondition.getOperator() == JoinCondition.Operator.IDENTICAL) {
             // Not supported in MySQL
             return false;
         }
@@ -1114,7 +1173,7 @@ public class MySqlClient
                 return tableStatistics.build();
             }
 
-            for (JdbcColumnHandle column : this.getColumns(session, table)) {
+            for (JdbcColumnHandle column : JdbcMetadata.getColumns(session, this, table)) {
                 ColumnStatistics.Builder columnStatisticsBuilder = ColumnStatistics.builder();
 
                 String columnName = column.getColumnName();
@@ -1136,7 +1195,7 @@ public class MySqlClient
                         // row count from INFORMATION_SCHEMA.TABLES is very inaccurate but rowCount already includes MAX(CARDINALITY) from indexes
                         // This can still happen if table's index statistics change concurrently
                         log.debug("Table %s rowCount calculated so far [%s] is less than index cardinality for %s: %s", table, rowCount, columnName, columnIndexStatistics);
-                        rowCount = max(rowCount, columnIndexStatistics.cardinality());
+                        rowCount = columnIndexStatistics.cardinality();
                     }
                 }
 
@@ -1145,6 +1204,43 @@ public class MySqlClient
 
             tableStatistics.setRowCount(Estimate.of(rowCount));
             return tableStatistics.build();
+        }
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, RemoteTableName remoteTableName)
+    {
+        SchemaTableName tableName = new SchemaTableName(remoteTableName.getCatalogName().orElse(null), remoteTableName.getTableName());
+        List<JdbcColumnHandle> columns = getColumns(session, tableName, remoteTableName);
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            DatabaseMetaData metaData = connection.getMetaData();
+
+            ResultSet primaryKeys = metaData.getPrimaryKeys(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName());
+
+            Set<String> primaryKeyNames = new HashSet<>();
+            while (primaryKeys.next()) {
+                primaryKeyNames.add(primaryKeys.getString("COLUMN_NAME"));
+            }
+            if (primaryKeyNames.isEmpty()) {
+                return ImmutableList.of();
+            }
+            ImmutableList.Builder<JdbcColumnHandle> primaryKeysBuilder = ImmutableList.builder();
+            for (JdbcColumnHandle columnHandle : columns) {
+                String name = columnHandle.getColumnName();
+                if (!primaryKeyNames.contains(name)) {
+                    continue;
+                }
+                JdbcTypeHandle handle = columnHandle.getJdbcTypeHandle();
+                primaryKeysBuilder.add(new JdbcColumnHandle(
+                        name,
+                        // make sure the primary keys that are varchar/char relate types can be pushdown
+                        new JdbcTypeHandle(handle.jdbcType(), handle.jdbcTypeName(), handle.columnSize(), handle.decimalDigits(), handle.arrayDimensions(), Optional.of(CASE_SENSITIVE)),
+                        columnHandle.getColumnType()));
+            }
+            return primaryKeysBuilder.build();
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
@@ -1213,17 +1309,18 @@ public class MySqlClient
         Long getRowCount(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                        SELECT max(row_count) FROM (
-                            (SELECT TABLE_ROWS AS row_count FROM INFORMATION_SCHEMA.TABLES
-                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                            AND TABLE_TYPE = 'BASE TABLE')
-                            UNION ALL
-                            (SELECT CARDINALITY AS row_count FROM INFORMATION_SCHEMA.STATISTICS
-                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                            AND CARDINALITY IS NOT NULL)
-                        ) t
-                        """)
+            return handle.createQuery(
+                            """
+                            SELECT max(row_count) FROM (
+                                (SELECT TABLE_ROWS AS row_count FROM INFORMATION_SCHEMA.TABLES
+                                WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                                AND TABLE_TYPE = 'BASE TABLE')
+                                UNION ALL
+                                (SELECT CARDINALITY AS row_count FROM INFORMATION_SCHEMA.STATISTICS
+                                WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                                AND CARDINALITY IS NOT NULL)
+                            ) t
+                            """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
                     .mapTo(Long.class)
@@ -1234,18 +1331,19 @@ public class MySqlClient
         Map<String, ColumnIndexStatistics> getColumnIndexStatistics(JdbcTableHandle table)
         {
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                        SELECT
-                            COLUMN_NAME,
-                            MAX(NULLABLE) AS NULLABLE,
-                            MAX(CARDINALITY) AS CARDINALITY
-                        FROM INFORMATION_SCHEMA.STATISTICS
-                        WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
-                        AND SEQ_IN_INDEX = 1 -- first column in the index
-                        AND SUB_PART IS NULL -- ignore cases where only a column prefix is indexed
-                        AND CARDINALITY IS NOT NULL -- CARDINALITY might be null (https://stackoverflow.com/a/42242729/65458)
-                        GROUP BY COLUMN_NAME -- there might be multiple indexes on a column
-                        """)
+            return handle.createQuery(
+                            """
+                            SELECT
+                                COLUMN_NAME,
+                                MAX(NULLABLE) AS NULLABLE,
+                                MAX(CARDINALITY) AS CARDINALITY
+                            FROM INFORMATION_SCHEMA.STATISTICS
+                            WHERE TABLE_SCHEMA = :schema AND TABLE_NAME = :table_name
+                            AND SEQ_IN_INDEX = 1 -- first column in the index
+                            AND SUB_PART IS NULL -- ignore cases where only a column prefix is indexed
+                            AND CARDINALITY IS NOT NULL -- CARDINALITY might be null (https://stackoverflow.com/a/42242729/65458)
+                            GROUP BY COLUMN_NAME -- there might be multiple indexes on a column
+                            """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
                     .map((rs, ctx) -> {
@@ -1276,10 +1374,11 @@ public class MySqlClient
             }
 
             RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
-            return handle.createQuery("""
-                        SELECT COLUMN_NAME, HISTOGRAM FROM INFORMATION_SCHEMA.COLUMN_STATISTICS
-                        WHERE SCHEMA_NAME = :schema AND TABLE_NAME = :table_name
-                        """)
+            return handle.createQuery(
+                            """
+                            SELECT COLUMN_NAME, HISTOGRAM FROM INFORMATION_SCHEMA.COLUMN_STATISTICS
+                            WHERE SCHEMA_NAME = :schema AND TABLE_NAME = :table_name
+                            """)
                     .bind("schema", remoteTableName.getCatalogName().orElse(null))
                     .bind("table_name", remoteTableName.getTableName())
                     .map((rs, ctx) -> new SimpleEntry<>(rs.getString("COLUMN_NAME"), rs.getString("HISTOGRAM")))
@@ -1287,7 +1386,7 @@ public class MySqlClient
         }
     }
 
-    private record ColumnIndexStatistics(boolean nullable, long cardinality) {}
+    private record ColumnIndexStatistics(boolean nullable, long cardinality) { }
 
     // See https://dev.mysql.com/doc/refman/8.0/en/optimizer-statistics.html
     public static class ColumnHistogram

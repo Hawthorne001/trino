@@ -18,11 +18,13 @@ import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
 import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
@@ -36,6 +38,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -101,9 +104,15 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
-    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
     {
-        return delegate().getColumns(session, tableHandle);
+        return delegate().getColumns(session, schemaTableName, remoteTableName);
+    }
+
+    @Override
+    public Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema)
+    {
+        return delegate().getAllTableColumns(session, schema);
     }
 
     @Override
@@ -152,6 +161,12 @@ public abstract class ForwardingJdbcClient
     public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return delegate().convertPredicate(session, expression, assignments);
+    }
+
+    @Override
+    public Optional<JdbcExpression> convertProjection(ConnectorSession session, JdbcTableHandle handle, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return delegate().convertProjection(session, handle, expression, assignments);
     }
 
     @Override
@@ -289,6 +304,13 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public Connection getConnection(ConnectorSession session)
+            throws SQLException
+    {
+        return delegate().getConnection(session);
+    }
+
+    @Override
     public Connection getConnection(ConnectorSession session, JdbcOutputTableHandle handle)
             throws SQLException
     {
@@ -333,6 +355,12 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public boolean supportsMerge()
+    {
+        return delegate().supportsMerge();
+    }
+
+    @Override
     public Optional<String> getTableComment(ResultSet resultSet)
             throws SQLException
     {
@@ -352,9 +380,9 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
-    public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column)
+    public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column, ColumnPosition position)
     {
-        delegate().addColumn(session, handle, column);
+        delegate().addColumn(session, handle, column, position);
     }
 
     @Override
@@ -475,5 +503,11 @@ public abstract class ForwardingJdbcClient
     public OptionalInt getMaxColumnNameLength(ConnectorSession session)
     {
         return delegate().getMaxColumnNameLength(session);
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, RemoteTableName remoteTableName)
+    {
+        return delegate().getPrimaryKeys(session, remoteTableName);
     }
 }

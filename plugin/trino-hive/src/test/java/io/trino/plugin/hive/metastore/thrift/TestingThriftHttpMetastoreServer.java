@@ -13,13 +13,10 @@
  */
 package io.trino.plugin.hive.metastore.thrift;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.inject.Injector;
-import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.http.server.HttpServerInfo;
-import io.airlift.http.server.TheServlet;
 import io.airlift.http.server.testing.TestingHttpServerModule;
 import io.airlift.node.testing.TestingNodeModule;
 import io.trino.hive.thrift.metastore.Database;
@@ -37,8 +34,7 @@ import org.apache.thrift.server.TServlet;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.URI;
-import java.util.Map;
-import java.util.Optional;
+import java.util.List;
 import java.util.function.Consumer;
 
 import static com.google.common.reflect.Reflection.newProxy;
@@ -50,17 +46,16 @@ public class TestingThriftHttpMetastoreServer
     private final LifeCycleManager lifeCycleManager;
     private final URI baseUri;
 
-    public TestingThriftHttpMetastoreServer(ThriftMetastore delegate, Consumer<HttpServletRequest> requestInterceptor)
+    public TestingThriftHttpMetastoreServer(TestingThriftRequestsHandler handler, Consumer<HttpServletRequest> requestInterceptor)
     {
-        ThriftHiveMetastore.Iface mockThriftHandler = proxyHandler(delegate, ThriftHiveMetastore.Iface.class);
+        ThriftHiveMetastore.Iface mockThriftHandler = proxyHandler(handler);
         TProcessor processor = new ThriftHiveMetastore.Processor<>(mockThriftHandler);
         thriftHttpServlet = new TestingThriftHttpServlet(processor, new TBinaryProtocol.Factory(), requestInterceptor);
         Bootstrap app = new Bootstrap(
                 new TestingNodeModule(),
                 new TestingHttpServerModule(),
                 binder -> {
-                    binder.bind(new TypeLiteral<Map<String, String>>() {}).annotatedWith(TheServlet.class).toInstance(ImmutableMap.of());
-                    binder.bind(Servlet.class).annotatedWith(TheServlet.class).toInstance(thriftHttpServlet);
+                    binder.bind(Servlet.class).toInstance(thriftHttpServlet);
                 });
 
         Injector injector = app
@@ -72,14 +67,13 @@ public class TestingThriftHttpMetastoreServer
         baseUri = httpServerInfo.getHttpUri();
     }
 
-    private static <T> T proxyHandler(ThriftMetastore delegate, Class<T> iface)
+    private static ThriftHiveMetastore.Iface proxyHandler(TestingThriftRequestsHandler handler)
     {
-        return newProxy(iface, (proxy, method, args) -> switch (method.getName()) {
-            case "getAllDatabases" -> delegate.getAllDatabases();
-            case "getDatabase" -> {
-                Optional<Database> optionalDatabase = delegate.getDatabase(args[0].toString());
-                yield optionalDatabase.orElseThrow(() -> new NoSuchObjectException(""));
-            }
+        return newProxy(ThriftHiveMetastore.Iface.class, (_, method, args) -> switch (method.getName()) {
+            case "getAllDatabases" -> handler.getAllDatabases();
+            case "getDatabase" -> handler.getDatabase(args[0].toString());
+            case "getTables" -> handler.getTables(args[0].toString(), args[1].toString());
+            case "getTablesByType" -> handler.getTablesByType(args[0].toString(), args[1].toString(), args[2].toString());
             default -> throw new UnsupportedOperationException();
         });
     }
@@ -118,5 +112,17 @@ public class TestingThriftHttpMetastoreServer
             requestInterceptor.accept(request);
             super.doPost(request, response);
         }
+    }
+
+    public interface TestingThriftRequestsHandler
+    {
+        List<String> getAllDatabases();
+
+        Database getDatabase(String name)
+                throws NoSuchObjectException;
+
+        List<String> getTables(String databaseName, String pattern);
+
+        List<String> getTablesByType(String databaseName, String pattern, String tableType);
     }
 }

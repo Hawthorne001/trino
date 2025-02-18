@@ -19,12 +19,15 @@ import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.errorprone.annotations.ThreadSafe;
 import com.google.errorprone.annotations.concurrent.GuardedBy;
+import io.airlift.concurrent.ThreadPoolExecutorMBean;
 import io.airlift.log.Logger;
 
 import java.util.Set;
 import java.util.StringJoiner;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -52,7 +55,10 @@ public final class FairScheduler
     public static final long QUANTUM_NANOS = TimeUnit.MILLISECONDS.toNanos(1000);
 
     private final ExecutorService schedulerExecutor;
+    private final ThreadPoolExecutorMBean schedulerExecutorMBean;
     private final ListeningExecutorService taskExecutor;
+    private final ThreadPoolExecutor executor; // instance underlying taskExecutor, for diagnostics
+    private final ThreadPoolExecutorMBean executorMBean;
     private final BlockingSchedulingQueue<Group, TaskControl> queue = new BlockingSchedulingQueue<>();
     private final Reservation<TaskControl> concurrencyControl;
     private final Ticker ticker;
@@ -69,8 +75,11 @@ public final class FairScheduler
         concurrencyControl = new Reservation<>(maxConcurrentTasks);
 
         schedulerExecutor = Executors.newCachedThreadPool(daemonThreadsNamed("fair-scheduler-%d"));
+        schedulerExecutorMBean = new ThreadPoolExecutorMBean((ThreadPoolExecutor) schedulerExecutor);
 
-        taskExecutor = MoreExecutors.listeningDecorator(Executors.newCachedThreadPool(daemonThreadsNamed(threadNameFormat)));
+        executor = new ThreadPoolExecutor(0, Integer.MAX_VALUE, 60L, TimeUnit.SECONDS, new SynchronousQueue<>(), daemonThreadsNamed(threadNameFormat));
+        executorMBean = new ThreadPoolExecutorMBean(executor);
+        taskExecutor = MoreExecutors.listeningDecorator(executor);
     }
 
     public static FairScheduler newInstance(int maxConcurrentTasks)
@@ -297,6 +306,32 @@ public final class FairScheduler
         return task.getBlockedNanos();
     }
 
+    public String diagnostics()
+    {
+        StringBuilder builder = new StringBuilder();
+        builder.append(queue);
+
+        builder.append("Task executor: pool=%s, active=%s, queue=%s\n".formatted(
+                executor.getPoolSize(),
+                executor.getActiveCount(),
+                executor.getQueue().size()));
+
+        builder.append("Concurrency control: slots=%s, available=%s\n".formatted(
+                concurrencyControl.totalSlots(),
+                concurrencyControl.availableSlots()));
+
+        builder.append("Reservations:\n");
+        if (concurrencyControl.totalSlots() - concurrencyControl.availableSlots() == 1) {
+            builder.append("    (pending)\n");
+        }
+        concurrencyControl.reservations().forEach(reservation ->
+                builder.append("    ")
+                        .append(reservation)
+                        .append("\n"));
+
+        return builder.toString();
+    }
+
     @Override
     public String toString()
     {
@@ -305,5 +340,28 @@ public final class FairScheduler
                 .add("concurrencyControl=" + concurrencyControl)
                 .add("closed=" + closed)
                 .toString();
+    }
+
+    //
+    // STATS, exposed from ThreadPerDriverTaskExecutor
+    //
+    public ThreadPoolExecutorMBean getSchedulerExecutor()
+    {
+        return schedulerExecutorMBean;
+    }
+
+    public ThreadPoolExecutorMBean getTaskExecutor()
+    {
+        return executorMBean;
+    }
+
+    public int getConcurrencyControlTotalSlots()
+    {
+        return concurrencyControl.totalSlots();
+    }
+
+    public int getConcurrencyControlAvailableSlots()
+    {
+        return concurrencyControl.availableSlots();
     }
 }

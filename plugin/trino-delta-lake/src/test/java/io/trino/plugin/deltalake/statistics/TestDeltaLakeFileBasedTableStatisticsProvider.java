@@ -16,6 +16,7 @@ package io.trino.plugin.deltalake.statistics;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.airlift.json.JsonCodecFactory;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.deltalake.DeltaLakeColumnHandle;
 import io.trino.plugin.deltalake.DeltaLakeConfig;
 import io.trino.plugin.deltalake.DeltaLakeSessionProperties;
@@ -25,7 +26,6 @@ import io.trino.plugin.deltalake.transactionlog.ProtocolEntry;
 import io.trino.plugin.deltalake.transactionlog.TableSnapshot;
 import io.trino.plugin.deltalake.transactionlog.TransactionLogAccess;
 import io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointSchemaManager;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.parquet.ParquetWriterConfig;
 import io.trino.spi.connector.ColumnHandle;
@@ -136,7 +136,7 @@ public class TestDeltaLakeFileBasedTableStatisticsProvider
         DeltaLakeTableHandle tableHandle = registerTable("nan");
         TableStatistics stats = getTableStatistics(SESSION, tableHandle);
         assertThat(stats.getRowCount()).isEqualTo(Estimate.of(1));
-        assertThat(stats.getColumnStatistics().size()).isEqualTo(1);
+        assertThat(stats.getColumnStatistics()).hasSize(1);
 
         ColumnStatistics columnStatistics = stats.getColumnStatistics().get(COLUMN_HANDLE);
         assertThat(columnStatistics.getRange()).isEqualTo(Optional.empty());

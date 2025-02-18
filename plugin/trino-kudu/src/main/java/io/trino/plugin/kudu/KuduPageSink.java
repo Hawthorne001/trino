@@ -16,6 +16,7 @@ package io.trino.plugin.kudu;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.spi.Page;
+import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.connector.ConnectorMergeSink;
 import io.trino.spi.connector.ConnectorPageSink;
@@ -47,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -61,6 +63,7 @@ import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
+import static org.apache.kudu.util.DateUtil.epochDaysToSqlDate;
 
 public class KuduPageSink
         implements ConnectorPageSink, ConnectorMergeSink
@@ -138,8 +141,8 @@ public class KuduPageSink
             }
             return NOT_BLOCKED;
         }
-        catch (KuduException e) {
-            throw new RuntimeException(e);
+        catch (KuduException | RuntimeException e) {
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
         }
     }
 
@@ -149,6 +152,9 @@ public class KuduPageSink
         Type type = columnTypes.get(destChannel);
         if (block.isNull(position)) {
             row.setNull(destChannel);
+        }
+        else if (DATE.equals(type)) {
+            row.addDate(destChannel, epochDaysToSqlDate(INTEGER.getInt(block, position)));
         }
         else if (TIMESTAMP_MILLIS.equals(type)) {
             row.addLong(destChannel, truncateEpochMicrosToMillis(TIMESTAMP_MILLIS.getLong(block, position)));
@@ -201,11 +207,11 @@ public class KuduPageSink
     @Override
     public void storeMergedRows(Page page)
     {
-        // The last channel in the page is the rowId block, the next-to-last is the operation block
+        // The last channel in the page is the rowId block, the next-to-last is the case number block, then the next is operation block
         int columnCount = originalColumnTypes.size();
-        checkArgument(page.getChannelCount() == 2 + columnCount, "The page size should be 2 + columnCount (%s), but is %s", columnCount, page.getChannelCount());
+        checkArgument(page.getChannelCount() == 3 + columnCount, "The page size should be 3 + columnCount (%s), but is %s", columnCount, page.getChannelCount());
         Block operationBlock = page.getBlock(columnCount);
-        Block rowIds = page.getBlock(columnCount + 1);
+        Block rowIds = page.getBlock(columnCount + 2);
 
         Schema schema = table.getSchema();
         try (KuduOperationApplier operationApplier = KuduOperationApplier.fromKuduClientSession(session)) {
@@ -228,8 +234,8 @@ public class KuduPageSink
                     try {
                         operationApplier.applyOperationAsync(delete);
                     }
-                    catch (KuduException e) {
-                        throw new RuntimeException(e);
+                    catch (KuduException | RuntimeException e) {
+                        throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
                     }
                 }
 
@@ -248,14 +254,14 @@ public class KuduPageSink
                     try {
                         operationApplier.applyOperationAsync(insert);
                     }
-                    catch (KuduException e) {
-                        throw new RuntimeException(e);
+                    catch (KuduException | RuntimeException e) {
+                        throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
                     }
                 }
             }
         }
-        catch (KuduException e) {
-            throw new RuntimeException(e);
+        catch (KuduException | RuntimeException e) {
+            throw new TrinoException(GENERIC_INTERNAL_ERROR, e);
         }
     }
 
@@ -266,7 +272,5 @@ public class KuduPageSink
     }
 
     @Override
-    public void abort()
-    {
-    }
+    public void abort() {}
 }

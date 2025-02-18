@@ -49,8 +49,9 @@ The following configuration properties are available:
 | `cassandra.native-protocol-port` | The Cassandra server port running the native client protocol, defaults to `9042`.                                                                                                                                                                                                                                                                                                                                           |
 | `cassandra.consistency-level`    | Consistency levels in Cassandra refer to the level of consistency to be used for both read and write operations.  More information about consistency levels can be found in the [Cassandra consistency] documentation. This property defaults to a consistency level of `ONE`. Possible values include `ALL`, `EACH_QUORUM`, `QUORUM`, `LOCAL_QUORUM`, `ONE`, `TWO`, `THREE`, `LOCAL_ONE`, `ANY`, `SERIAL`, `LOCAL_SERIAL`. |
 | `cassandra.allow-drop-table`     | Enables {doc}`/sql/drop-table` operations. Defaults to `false`.                                                                                                                                                                                                                                                                                                                                                             |
-| `cassandra.username`             | Username used for authentication to the Cassandra cluster. This is a global setting used for all connections, regardless of the user connected to Trino.                                                                                                                                                                                                                                                                    |
-| `cassandra.password`             | Password used for authentication to the Cassandra cluster. This is a global setting used for all connections, regardless of the user connected to Trino.                                                                                                                                                                                                                                                                    |
+| `cassandra.security`             | Configure authentication to Cassandra. Defaults to `NONE`. Set to `PASSWORD` for basic authentication, and configure `cassandra.username` and `cassandra.password`.                                                                                                                                                                                                                                                         |
+| `cassandra.username`             | Username used for authentication to the Cassandra cluster. Requires `cassandra.security=PASSWORD`. This is a global setting used for all connections, regardless of the user connected to Trino.                                                                                                                                                                                                                            |
+| `cassandra.password`             | Password used for authentication to the Cassandra cluster. Requires `cassandra.security=PASSWORD`. This is a global setting used for all connections, regardless of the user connected to Trino.                                                                                                                                                                                                                            |
 | `cassandra.protocol-version`     | It is possible to override the protocol version for older Cassandra clusters. By default, the value corresponds to the default protocol version used in the underlying Cassandra java driver. Possible values include `V3`, `V4`, `V5`, `V6`.                                                                                                                                                                               |
 
 :::{note}
@@ -123,7 +124,6 @@ SELECT * FROM example.example_keyspace.users;
 ```
 
 (cassandra-type-mapping)=
-
 ## Type mapping
 
 Because Trino and Cassandra each support types that the other does not, this
@@ -300,7 +300,6 @@ Partition keys can only be of the following types:
 - Range (`<` or `>` and `BETWEEN`) filters can be applied only to the partition keys.
 
 (cassandra-sql-support)=
-
 ## SQL support
 
 The connector provides read and write access to data and metadata in
@@ -315,13 +314,18 @@ statements, the connector supports the following features:
 - {doc}`/sql/create-table-as`
 - {doc}`/sql/drop-table`
 
-## Table functions
+### Procedures
+
+```{include} procedures-execute.fragment
+```
+
+### Table functions
 
 The connector provides specific {doc}`table functions </functions/table>` to
 access Cassandra.
 .. \_cassandra-query-function:
 
-### `query(varchar) -> table`
+#### `query(varchar) -> table`
 
 The `query` function allows you to query the underlying Cassandra directly. It
 requires syntax native to Cassandra, because the full query is pushed down and
@@ -359,7 +363,6 @@ cassandra.allow-drop-table=true
 ```
 
 (sql-delete-limitation)=
-
 ### SQL delete limitation
 
 `DELETE` is only supported if the `WHERE` clause matches entire partitions.

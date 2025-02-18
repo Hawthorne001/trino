@@ -16,6 +16,7 @@ package io.trino.plugin.iceberg.catalog.rest;
 import com.google.common.collect.ImmutableMap;
 import org.junit.jupiter.api.Test;
 
+import java.net.URI;
 import java.util.Map;
 
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
@@ -30,7 +31,9 @@ public class TestOAuth2SecurityConfig
     {
         assertRecordedDefaults(recordDefaults(OAuth2SecurityConfig.class)
                 .setCredential(null)
-                .setToken(null));
+                .setToken(null)
+                .setScope(null)
+                .setServerUri(null));
     }
 
     @Test
@@ -39,12 +42,17 @@ public class TestOAuth2SecurityConfig
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("iceberg.rest-catalog.oauth2.token", "token")
                 .put("iceberg.rest-catalog.oauth2.credential", "credential")
+                .put("iceberg.rest-catalog.oauth2.scope", "scope")
+                .put("iceberg.rest-catalog.oauth2.server-uri", "http://localhost:8080/realms/iceberg/protocol/openid-connect/token")
                 .buildOrThrow();
 
         OAuth2SecurityConfig expected = new OAuth2SecurityConfig()
                 .setCredential("credential")
-                .setToken("token");
+                .setToken("token")
+                .setScope("scope")
+                .setServerUri(URI.create("http://localhost:8080/realms/iceberg/protocol/openid-connect/token"));
         assertThat(expected.credentialOrTokenPresent()).isTrue();
+        assertThat(expected.scopePresentOnlyWithCredential()).isFalse();
         assertFullMapping(properties, expected);
     }
 }

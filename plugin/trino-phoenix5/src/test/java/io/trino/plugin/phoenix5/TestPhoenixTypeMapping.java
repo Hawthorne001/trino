@@ -14,7 +14,6 @@
 package io.trino.plugin.phoenix5;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
 import io.trino.spi.type.ArrayType;
@@ -48,7 +47,6 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_MAPPI
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_ROUNDING_MODE;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.phoenix5.PhoenixQueryRunner.createPhoenixQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -93,7 +91,7 @@ public class TestPhoenixTypeMapping
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
+        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1932, 4, 1);
         checkIsGap(jvmZone, dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay());
 
         LocalDate dateOfLocalTimeChangeForwardAtMidnightInSomeZone = LocalDate.of(1983, 4, 1);
@@ -109,7 +107,8 @@ public class TestPhoenixTypeMapping
             throws Exception
     {
         phoenixServer = closeAfterClass(TestingPhoenixServer.getInstance()).get();
-        return createPhoenixQueryRunner(phoenixServer, ImmutableMap.of(), ImmutableList.of());
+        return PhoenixQueryRunner.builder(phoenixServer)
+                .build();
     }
 
     @Test
@@ -716,7 +715,7 @@ public class TestPhoenixTypeMapping
     public void testArrayNulls()
     {
         // Verify only SELECT instead of using SqlDataTypeTest because array comparison not supported for arrays with null elements
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
+        try (TestTable table = newTrinoTable("test_array_nulls", "(c1 ARRAY(boolean), c2 ARRAY(varchar), c3 ARRAY(varchar))", ImmutableList.of("(NULL, ARRAY[NULL], ARRAY['foo', NULL, 'bar', NULL])"))) {
             assertThat(query("SELECT c1 FROM " + table.getName())).matches("VALUES CAST(NULL AS ARRAY(boolean))");
             assertThat(query("SELECT c2 FROM " + table.getName())).matches("VALUES CAST(ARRAY[NULL] AS ARRAY(varchar))");
             assertThat(query("SELECT c3 FROM " + table.getName())).matches("VALUES CAST(ARRAY['foo', NULL, 'bar', NULL] AS ARRAY(varchar))");

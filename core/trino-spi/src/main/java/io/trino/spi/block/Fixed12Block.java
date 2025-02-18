@@ -224,12 +224,6 @@ public final class Fixed12Block
     }
 
     @Override
-    public String getEncodingName()
-    {
-        return Fixed12BlockEncoding.NAME;
-    }
-
-    @Override
     public Fixed12Block copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, positionOffset, positionCount);
@@ -247,6 +241,12 @@ public final class Fixed12Block
     public String toString()
     {
         return "Fixed12Block{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, positionOffset, positionCount);
     }
 
     /**

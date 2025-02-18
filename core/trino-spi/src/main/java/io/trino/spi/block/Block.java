@@ -47,20 +47,6 @@ public sealed interface Block
     long getSizeInBytes();
 
     /**
-     * Returns the size of the block contents, regardless of internal representation.
-     * The same logical data values should always have the same size, no matter
-     * what block type is used or how they are represented within a specific block.
-     * <p>
-     * This can differ substantially from {@link #getSizeInBytes} for certain block
-     * types. For RLE, it will be {@code N} times larger. For dictionary, it will be
-     * larger based on how many times dictionary entries are reused.
-     */
-    default long getLogicalSizeInBytes()
-    {
-        return getSizeInBytes();
-    }
-
-    /**
      * Returns the size of {@code block.getRegion(position, length)}.
      * The method can be expensive. Do not use it outside an implementation of Block.
      */
@@ -107,11 +93,6 @@ public sealed interface Block
      * must include the instance size of the current block
      */
     void retainedBytesForEachPart(ObjLongConsumer<Object> consumer);
-
-    /**
-     * Get the encoding for this block.
-     */
-    String getEncodingName();
 
     /**
      * Create a new block from the current block by keeping the same elements only with respect

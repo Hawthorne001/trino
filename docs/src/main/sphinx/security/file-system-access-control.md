@@ -13,7 +13,6 @@ There are two types of file-based access control:
   authorization.
 
 (system-file-based-access-control)=
-
 ## System-level access control files
 
 The access control plugin allows you to specify authorization rules for the
@@ -143,15 +142,14 @@ Permissions required for executing functions:
 * - `CREATE FUNCTION`
   - `all`
   - `ownership`
-  -  Not all connectors support [catalog routines](routine-catalog).
+  -  Not all connectors support [](udf-catalog).
 * - `DROP FUNCTION`
   - `all`
   - `ownership`
-  -  Not all connectors support [catalog routines](routine-catalog).
+  -  Not all connectors support [](udf-catalog).
 :::
 
 (system-file-auth-visibility)=
-
 #### Visibility
 
 For a catalog, schema, or table to be visible in a `SHOW` command, the user
@@ -370,7 +368,6 @@ The example below defines the following table access policy:
 ```
 
 (system-file-function-rules)=
-
 #### Function rules
 
 These rules control the ability of a user to create, drop, and execute functions.
@@ -435,7 +432,8 @@ any catalog, and allows all users to create, drop, and execute functions (includ
 (system-file-procedure-rules)=
 #### Procedure rules
 
-These rules control the ability of a user to execute procedures.
+These rules control the ability of a user to execute procedures using the
+[CALL](/sql/call) statement.
 
 Procedures are used for administrative operations on a specific catalog, such as
 registering external tables or flushing the connector's cache. Available
@@ -493,8 +491,16 @@ connector](/connector/delta-lake). It allows all users to execute the
 }
 ```
 
-(verify-rules)=
+(system-file-table-procedure-rules)=
+#### Table procedure rules
 
+Table procedures are executed using the
+[ALTER TABLE ... EXECUTE](alter-table-execute) syntax.
+
+File-based access control does not support privileges for table procedures and
+therefore all are effectively allowed.
+
+(verify-rules)=
 #### Verify configuration
 
 To verify the system-access control file is configured properly, set the
@@ -522,7 +528,6 @@ Query 20200824_183358_00000_c62aw failed: Access Denied: Cannot access catalog s
 Remove these rules and restart the Trino cluster.
 
 (system-file-auth-session-property)=
-
 ### Session property rules
 
 These rules control the ability of a user to set system and catalog session
@@ -556,7 +561,6 @@ The example below defines the following table access policy:
 ```
 
 (query-rules)=
-
 ### Query rules
 
 These rules control the ability of a user to execute, view, or kill a query. The
@@ -591,7 +595,6 @@ rules:
 ```
 
 (system-file-auth-impersonation-rules)=
-
 ### Impersonation rules
 
 These rules control the ability of a user to impersonate another user. In
@@ -635,7 +638,6 @@ allows a user in the form `team_backend` to impersonate the
 ```
 
 (system-file-auth-principal-rules)=
-
 ### Principal rules
 
 :::{warning}
@@ -707,7 +709,6 @@ as `group@example.net`, you can use the following rules.
 ```
 
 (system-file-auth-system-information)=
-
 ### System information rules
 
 These rules specify which users can access the system information management
@@ -757,15 +758,16 @@ user over HTTPS, set the `management.user.https-enabled` configuration
 property.
 
 (system-file-auth-authorization)=
-
 ### Authorization rules
 
 These rules control the ability of how owner of schema, table or view can
 be altered. These rules are applicable to commands like:
 
-> ALTER SCHEMA name SET AUTHORIZATION ( user | USER user | ROLE role )
-> ALTER TABLE name SET AUTHORIZATION ( user | USER user | ROLE role )
-> ALTER VIEW name SET AUTHORIZATION ( user | USER user | ROLE role )
+```sql
+ALTER SCHEMA name SET AUTHORIZATION ( user | USER user | ROLE role )
+ALTER TABLE name SET AUTHORIZATION ( user | USER user | ROLE role )
+ALTER VIEW name SET AUTHORIZATION ( user | USER user | ROLE role )
+```
 
 When these rules are present, the authorization is based on the first matching
 rule, processed from top to bottom. If no rules match, the authorization is

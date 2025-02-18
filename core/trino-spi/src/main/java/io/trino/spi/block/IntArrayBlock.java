@@ -199,12 +199,6 @@ public final class IntArrayBlock
     }
 
     @Override
-    public String getEncodingName()
-    {
-        return IntArrayBlockEncoding.NAME;
-    }
-
-    @Override
     public IntArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
@@ -223,6 +217,12 @@ public final class IntArrayBlock
     public String toString()
     {
         return "IntArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     boolean[] getRawValueIsNull()

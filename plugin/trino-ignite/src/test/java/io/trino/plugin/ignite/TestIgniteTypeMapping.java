@@ -14,7 +14,6 @@
 package io.trino.plugin.ignite;
 
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -36,8 +35,6 @@ import java.time.ZoneId;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.ignite.IgniteQueryRunner.createIgniteQueryRunner;
-import static io.trino.plugin.ignite.IgniteQueryRunner.createSession;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -69,18 +66,14 @@ public class TestIgniteTypeMapping
             throws Exception
     {
         this.igniteServer = closeAfterClass(TestingIgniteServer.getInstance()).get();
-        return createIgniteQueryRunner(
-                igniteServer,
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableList.of());
+        return IgniteQueryRunner.builder(igniteServer).build();
     }
 
     @BeforeAll
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        checkIsGap(jvmZone, LocalDate.of(1970, 1, 1));
+        checkIsGap(jvmZone, LocalDate.of(1932, 4, 1));
         checkIsGap(vilnius, LocalDate.of(1983, 4, 1));
         verify(vilnius.getRules().getValidOffsets(LocalDate.of(1983, 10, 1).atStartOfDay().minusMinutes(1)).size() == 2);
     }
@@ -235,7 +228,7 @@ public class TestIgniteTypeMapping
                 .addRoundTrip("double", "+infinity()", DOUBLE, "+infinity()")
                 .addRoundTrip("double", "-infinity()", DOUBLE, "-infinity()")
                 .execute(getQueryRunner(), trinoCreateAsSelect("trino_test_double"))
-                .execute(getQueryRunner(), trinoCreateAndInsert(createSession(), "trino_test_double"));
+                .execute(getQueryRunner(), trinoCreateAndInsert("trino_test_double"));
     }
 
     @Test
@@ -425,7 +418,7 @@ public class TestIgniteTypeMapping
 
     private DataSetup trinoCreateAndInsert(String tableNamePrefix)
     {
-        return trinoCreateAndInsert(createSession(), tableNamePrefix);
+        return trinoCreateAndInsert(getSession(), tableNamePrefix);
     }
 
     private DataSetup trinoCreateAndInsert(Session session, String tableNamePrefix)

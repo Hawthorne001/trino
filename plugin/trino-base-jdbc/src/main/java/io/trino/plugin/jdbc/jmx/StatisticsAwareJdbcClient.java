@@ -33,11 +33,13 @@ import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
+import io.trino.spi.connector.ColumnPosition;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
+import io.trino.spi.connector.RelationColumnsMetadata;
 import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
@@ -53,6 +55,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -122,9 +125,16 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
-    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, SchemaTableName schemaTableName, RemoteTableName remoteTableName)
     {
-        return stats.getGetColumns().wrap(() -> delegate().getColumns(session, tableHandle));
+        return stats.getGetColumns().wrap(() -> delegate().getColumns(session, schemaTableName, remoteTableName));
+    }
+
+    @Override
+    public Iterator<RelationColumnsMetadata> getAllTableColumns(ConnectorSession session, Optional<String> schema)
+    {
+        // Note: no stats here. As it results an Iterator, the stats would not reflect actual time.
+        return delegate().getAllTableColumns(session, schema);
     }
 
     @Override
@@ -173,6 +183,12 @@ public final class StatisticsAwareJdbcClient
     public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return stats.getConvertPredicate().wrap(() -> delegate().convertPredicate(session, expression, assignments));
+    }
+
+    @Override
+    public Optional<JdbcExpression> convertProjection(ConnectorSession session, JdbcTableHandle handle, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return stats.getConvertProjection().wrap(() -> delegate().convertProjection(session, handle, expression, assignments));
     }
 
     @Override
@@ -279,9 +295,9 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
-    public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column)
+    public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column, ColumnPosition position)
     {
-        stats.getAddColumn().wrap(() -> delegate().addColumn(session, handle, column));
+        stats.getAddColumn().wrap(() -> delegate().addColumn(session, handle, column, position));
     }
 
     @Override
@@ -375,6 +391,13 @@ public final class StatisticsAwareJdbcClient
     }
 
     @Override
+    public Connection getConnection(ConnectorSession session)
+            throws SQLException
+    {
+        return stats.getGetConnectionWithHandle().wrap(() -> delegate().getConnection(session));
+    }
+
+    @Override
     public Connection getConnection(ConnectorSession session, JdbcOutputTableHandle handle)
             throws SQLException
     {
@@ -416,6 +439,12 @@ public final class StatisticsAwareJdbcClient
     public boolean isLimitGuaranteed(ConnectorSession session)
     {
         return delegate().isLimitGuaranteed(session);
+    }
+
+    @Override
+    public boolean supportsMerge()
+    {
+        return delegate().supportsMerge();
     }
 
     @Override
@@ -494,5 +523,11 @@ public final class StatisticsAwareJdbcClient
     public OptionalInt getMaxColumnNameLength(ConnectorSession session)
     {
         return delegate().getMaxColumnNameLength(session);
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getPrimaryKeys(ConnectorSession session, RemoteTableName remoteTableName)
+    {
+        return stats.getGetPrimaryKeys().wrap(() -> delegate().getPrimaryKeys(session, remoteTableName));
     }
 }

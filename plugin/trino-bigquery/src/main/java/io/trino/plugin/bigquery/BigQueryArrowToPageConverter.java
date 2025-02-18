@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.bigquery;
 
+import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
@@ -85,20 +86,14 @@ public class BigQueryArrowToPageConverter
     private final BigQueryTypeManager typeManager;
     private final VectorSchemaRoot root;
     private final VectorLoader loader;
+    private final List<BigQueryColumnHandle> columns;
     private final BufferAllocator allocator;
-    private final List<Type> columnTypes;
-    private final List<String> columnNames;
 
     public BigQueryArrowToPageConverter(BigQueryTypeManager typeManager, BufferAllocator allocator, Schema schema, List<BigQueryColumnHandle> columns)
     {
         this.typeManager = requireNonNull(typeManager, "typeManager is null");
         this.allocator = requireNonNull(allocator, "allocator is null");
-        this.columnTypes = requireNonNull(columns, "columns is null").stream()
-                .map(BigQueryColumnHandle::trinoType)
-                .collect(toImmutableList());
-        this.columnNames = columns.stream()
-                .map(BigQueryColumnHandle::name)
-                .collect(toImmutableList());
+        this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         List<FieldVector> vectors = schema.getFields().stream()
                 .map(field -> field.createVector(allocator))
                 .collect(toImmutableList());
@@ -111,15 +106,32 @@ public class BigQueryArrowToPageConverter
         loader.load(batch);
         pageBuilder.declarePositions(root.getRowCount());
 
-        for (int column = 0; column < columnTypes.size(); column++) {
+        for (int column = 0; column < columns.size(); column++) {
+            BigQueryColumnHandle columnHandle = columns.get(column);
+            FieldVector fieldVector = getFieldVector(root, columnHandle);
             convertType(pageBuilder.getBlockBuilder(column),
-                    columnTypes.get(column),
-                    root.getVector(toBigQueryColumnName(columnNames.get(column))),
+                    columnHandle.trinoType(),
+                    fieldVector,
                     0,
-                    root.getVector(toBigQueryColumnName(columnNames.get(column))).getValueCount());
+                    fieldVector.getValueCount());
         }
 
         root.clear();
+    }
+
+    private static FieldVector getFieldVector(VectorSchemaRoot root, BigQueryColumnHandle columnHandle)
+    {
+        FieldVector fieldVector = root.getVector(toBigQueryColumnName(columnHandle.name()));
+
+        for (String dereferenceName : columnHandle.dereferenceNames()) {
+            for (FieldVector child : fieldVector.getChildrenFromFields()) {
+                if (child.getField().getName().equals(dereferenceName)) {
+                    fieldVector = child;
+                    break;
+                }
+            }
+        }
+        return fieldVector;
     }
 
     private void convertType(BlockBuilder output, Type type, FieldVector vector, int offset, int length)

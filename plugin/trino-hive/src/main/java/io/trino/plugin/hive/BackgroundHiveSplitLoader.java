@@ -29,15 +29,18 @@ import io.trino.filesystem.FileIterator;
 import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoFileSystemFactory;
+import io.trino.metastore.Column;
+import io.trino.metastore.HiveBucketProperty;
+import io.trino.metastore.HivePartition;
+import io.trino.metastore.HiveType;
+import io.trino.metastore.Partition;
+import io.trino.metastore.StorageFormat;
+import io.trino.metastore.Table;
 import io.trino.plugin.hive.HiveSplit.BucketConversion;
 import io.trino.plugin.hive.HiveSplit.BucketValidation;
 import io.trino.plugin.hive.fs.DirectoryLister;
 import io.trino.plugin.hive.fs.HiveFileIterator;
 import io.trino.plugin.hive.fs.TrinoFileStatus;
-import io.trino.plugin.hive.metastore.Column;
-import io.trino.plugin.hive.metastore.Partition;
-import io.trino.plugin.hive.metastore.StorageFormat;
-import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.util.AcidTables.AcidState;
 import io.trino.plugin.hive.util.AcidTables.ParsedDelta;
 import io.trino.plugin.hive.util.HiveBucketing.BucketingVersion;
@@ -110,12 +113,13 @@ import static io.trino.plugin.hive.util.AcidTables.isFullAcidTable;
 import static io.trino.plugin.hive.util.AcidTables.isTransactionalTable;
 import static io.trino.plugin.hive.util.AcidTables.readAcidVersionFile;
 import static io.trino.plugin.hive.util.HiveBucketing.getBucketingVersion;
+import static io.trino.plugin.hive.util.HiveTypeUtil.typeSupported;
 import static io.trino.plugin.hive.util.HiveUtil.checkCondition;
-import static io.trino.plugin.hive.util.HiveUtil.getDeserializerClassName;
 import static io.trino.plugin.hive.util.HiveUtil.getFooterCount;
 import static io.trino.plugin.hive.util.HiveUtil.getHeaderCount;
 import static io.trino.plugin.hive.util.HiveUtil.getInputFormatName;
 import static io.trino.plugin.hive.util.HiveUtil.getPartitionKeyColumnHandles;
+import static io.trino.plugin.hive.util.HiveUtil.getSerializationLibraryName;
 import static io.trino.plugin.hive.util.PartitionMatchSupplier.createPartitionMatchSupplier;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.Integer.parseInt;
@@ -410,7 +414,7 @@ public class BackgroundHiveSplitLoader
             if (tableBucketInfo.isPresent()) {
                 throw new TrinoException(NOT_SUPPORTED, "Bucketed table in SymlinkTextInputFormat is not yet supported");
             }
-            HiveStorageFormat targetStorageFormat = getSymlinkStorageFormat(getDeserializerClassName(schema));
+            HiveStorageFormat targetStorageFormat = getSymlinkStorageFormat(getSerializationLibraryName(schema));
             ListMultimap<Location, Location> targets = getTargetLocationsByParentFromSymlink(location);
 
             InternalHiveSplitFactory splitFactory = new InternalHiveSplitFactory(
@@ -878,7 +882,7 @@ public class BackgroundHiveSplitLoader
         for (int i = 0; i < keys.size(); i++) {
             String name = keys.get(i).getName();
             HiveType hiveType = keys.get(i).getType();
-            if (!hiveType.isSupportedType(table.getStorage().getStorageFormat())) {
+            if (!typeSupported(hiveType.getTypeInfo(), table.getStorage().getStorageFormat())) {
                 throw new TrinoException(NOT_SUPPORTED, format("Unsupported Hive type %s found in partition keys of table %s.%s", hiveType, table.getDatabaseName(), table.getTableName()));
             }
             String value = values.get(i);
@@ -896,21 +900,21 @@ public class BackgroundHiveSplitLoader
         private final int readBucketCount;
         private final IntPredicate bucketFilter;
 
-        public static Optional<BucketSplitInfo> createBucketSplitInfo(Optional<HiveBucketHandle> bucketHandle, Optional<HiveBucketFilter> bucketFilter)
+        public static Optional<BucketSplitInfo> createBucketSplitInfo(Optional<HiveTablePartitioning> tablePartitioning, Optional<HiveBucketFilter> bucketFilter)
         {
-            requireNonNull(bucketHandle, "bucketHandle is null");
+            requireNonNull(tablePartitioning, "tablePartitioning is null");
             requireNonNull(bucketFilter, "bucketFilter is null");
 
-            if (bucketHandle.isEmpty()) {
-                checkArgument(bucketFilter.isEmpty(), "bucketHandle must be present if bucketFilter is present");
+            if (tablePartitioning.isEmpty()) {
+                checkArgument(bucketFilter.isEmpty(), "tablePartitioning must be present if bucketFilter is present");
                 return Optional.empty();
             }
 
-            BucketingVersion bucketingVersion = bucketHandle.get().bucketingVersion();
-            int tableBucketCount = bucketHandle.get().tableBucketCount();
-            int readBucketCount = bucketHandle.get().readBucketCount();
+            BucketingVersion bucketingVersion = tablePartitioning.get().partitioningHandle().getBucketingVersion();
+            int tableBucketCount = tablePartitioning.get().tableBucketCount();
+            int readBucketCount = tablePartitioning.get().partitioningHandle().getBucketCount();
 
-            List<HiveColumnHandle> bucketColumns = bucketHandle.get().columns();
+            List<HiveColumnHandle> bucketColumns = tablePartitioning.get().columns();
             IntPredicate predicate = bucketFilter
                     .<IntPredicate>map(filter -> filter.getBucketsToKeep()::contains)
                     .orElse(bucket -> true);

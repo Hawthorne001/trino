@@ -16,7 +16,6 @@ package io.trino.plugin.hive.metastore.thrift;
 import com.google.inject.Inject;
 import io.airlift.units.Duration;
 import io.trino.filesystem.TrinoFileSystemFactory;
-import io.trino.plugin.hive.util.RetryDriver;
 import io.trino.spi.security.ConnectorIdentity;
 import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
@@ -63,8 +62,8 @@ public class ThriftHttpMetastoreFactory
                 fileSystemFactory,
                 metastoreClientFactory,
                 RetryDriver.DEFAULT_SCALE_FACTOR,
-                RetryDriver.DEFAULT_SLEEP_TIME,
-                RetryDriver.DEFAULT_SLEEP_TIME,
+                RetryDriver.DEFAULT_MIN_BACKOFF_DELAY,
+                RetryDriver.DEFAULT_MAX_BACKOFF_DELAY,
                 RetryDriver.DEFAULT_MAX_RETRY_TIME,
                 new Duration(10, MINUTES),
                 RetryDriver.DEFAULT_MAX_ATTEMPTS,

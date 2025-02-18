@@ -23,8 +23,8 @@ import io.trino.orc.OrcDataSource;
 import io.trino.orc.OrcDataSourceId;
 import io.trino.orc.OrcRecordReader;
 import io.trino.orc.metadata.CompressionKind;
+import io.trino.plugin.base.metrics.FileFormatDataSourceStats;
 import io.trino.plugin.base.metrics.LongCount;
-import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.coercions.TypeCoercer;
 import io.trino.plugin.hive.orc.OrcDeletedRows.MaskDeletedRowsFunction;
 import io.trino.spi.Page;
@@ -301,9 +301,7 @@ public class OrcPageSource
         public NullColumn(Type type)
         {
             this.type = requireNonNull(type, "type is null");
-            this.nullBlock = type.createBlockBuilder(null, 1, 0)
-                    .appendNull()
-                    .build();
+            this.nullBlock = type.createNullBlock();
         }
 
         @Override

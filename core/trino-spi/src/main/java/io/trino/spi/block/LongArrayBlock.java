@@ -198,12 +198,6 @@ public final class LongArrayBlock
     }
 
     @Override
-    public String getEncodingName()
-    {
-        return LongArrayBlockEncoding.NAME;
-    }
-
-    @Override
     public LongArrayBlock copyWithAppendedNull()
     {
         boolean[] newValueIsNull = copyIsNullAndAppendNull(valueIsNull, arrayOffset, positionCount);
@@ -222,6 +216,12 @@ public final class LongArrayBlock
     public String toString()
     {
         return "LongArrayBlock{positionCount=" + getPositionCount() + '}';
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(valueIsNull, arrayOffset, positionCount);
     }
 
     int getRawValuesOffset()

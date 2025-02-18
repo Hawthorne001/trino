@@ -30,6 +30,7 @@ import io.trino.sql.tree.Insert;
 import io.trino.sql.tree.LikeClause;
 import io.trino.sql.tree.Limit;
 import io.trino.sql.tree.LongLiteral;
+import io.trino.sql.tree.NodeLocation;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.QueryBody;
 import io.trino.sql.tree.QuerySpecification;
@@ -162,7 +163,7 @@ public class QueryRewriter
             connection.setCatalog(catalogOverride.orElse(query.getCatalog()));
             connection.setSchema(schemaOverride.orElse(query.getSchema()));
         }
-        catch (SQLClientInfoException ignored) {
+        catch (SQLClientInfoException _) {
             // Do nothing
         }
     }
@@ -205,10 +206,10 @@ public class QueryRewriter
                     querySpecification.getOffset(),
                     Optional.of(new Limit(new LongLiteral("0"))));
 
-            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.empty());
         }
         else {
-            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
+            zeroRowsQuery = new io.trino.sql.tree.Query(ImmutableList.of(), ImmutableList.of(), createSelectClause.getWith(), innerQuery, Optional.empty(), Optional.empty(), Optional.of(new Limit(new LongLiteral("0"))));
         }
 
         ImmutableList.Builder<Column> columns = ImmutableList.builder();
@@ -256,7 +257,7 @@ public class QueryRewriter
 
     private static String dropTableSql(QualifiedName table)
     {
-        return formatSql(new DropTable(table, true));
+        return formatSql(new DropTable(new NodeLocation(1, 1), table, true));
     }
 
     private static String escapeLikeExpression(Connection connection, String value)

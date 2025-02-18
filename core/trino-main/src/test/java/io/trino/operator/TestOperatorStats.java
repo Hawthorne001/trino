@@ -66,6 +66,7 @@ public class TestOperatorStats
             533,
             new Metrics(ImmutableMap.of("metrics", new LongCount(42))),
             new Metrics(ImmutableMap.of("connectorMetrics", new LongCount(43))),
+            new Metrics(ImmutableMap.of("pipelineMetrics", new LongCount(44))),
 
             DataSize.ofBytes(14),
 
@@ -114,6 +115,7 @@ public class TestOperatorStats
             533,
             new Metrics(ImmutableMap.of("metrics", new LongCount(42))),
             new Metrics(ImmutableMap.of("connectorMetrics", new LongCount(43))),
+            new Metrics(ImmutableMap.of("pipelineMetrics", new LongCount(44))),
 
             DataSize.ofBytes(14),
 
@@ -172,6 +174,7 @@ public class TestOperatorStats
         assertThat(actual.getDynamicFilterSplitsProcessed()).isEqualTo(533);
         assertThat(actual.getMetrics().getMetrics()).isEqualTo(ImmutableMap.of("metrics", new LongCount(42)));
         assertThat(actual.getConnectorMetrics().getMetrics()).isEqualTo(ImmutableMap.of("connectorMetrics", new LongCount(43)));
+        assertThat(actual.getPipelineMetrics().getMetrics()).isEqualTo(ImmutableMap.of("pipelineMetrics", new LongCount(44)));
 
         assertThat(actual.getPhysicalWrittenDataSize()).isEqualTo(DataSize.ofBytes(14));
 
@@ -223,6 +226,7 @@ public class TestOperatorStats
         assertThat(actual.getDynamicFilterSplitsProcessed()).isEqualTo(3 * 533);
         assertThat(actual.getMetrics().getMetrics()).isEqualTo(ImmutableMap.of("metrics", new LongCount(3 * 42)));
         assertThat(actual.getConnectorMetrics().getMetrics()).isEqualTo(ImmutableMap.of("connectorMetrics", new LongCount(3 * 43)));
+        assertThat(actual.getPipelineMetrics().getMetrics()).isEqualTo(ImmutableMap.of("pipelineMetrics", new LongCount(3 * 44)));
 
         assertThat(actual.getPhysicalWrittenDataSize()).isEqualTo(DataSize.ofBytes(3 * 14));
 
@@ -237,7 +241,8 @@ public class TestOperatorStats
         assertThat(actual.getPeakRevocableMemoryReservation()).isEqualTo(DataSize.ofBytes(24));
         assertThat(actual.getPeakTotalMemoryReservation()).isEqualTo(DataSize.ofBytes(25));
         assertThat(actual.getSpilledDataSize()).isEqualTo(DataSize.ofBytes(3 * 26));
-        assertThat(actual.getInfo()).isNull();
+        assertThat(actual.getInfo()).isInstanceOf(SplitOperatorInfo.class);
+        assertThat(((SplitOperatorInfo) actual.getInfo()).getSplitInfo().get("some_info")).isEqualTo("some_value (2 more)");
     }
 
     @Test
@@ -272,6 +277,7 @@ public class TestOperatorStats
         assertThat(actual.getDynamicFilterSplitsProcessed()).isEqualTo(3 * 533);
         assertThat(actual.getMetrics().getMetrics()).isEqualTo(ImmutableMap.of("metrics", new LongCount(3 * 42)));
         assertThat(actual.getConnectorMetrics().getMetrics()).isEqualTo(ImmutableMap.of("connectorMetrics", new LongCount(3 * 43)));
+        assertThat(actual.getPipelineMetrics().getMetrics()).isEqualTo(ImmutableMap.of("pipelineMetrics", new LongCount(3 * 44)));
 
         assertThat(actual.getPhysicalWrittenDataSize()).isEqualTo(DataSize.ofBytes(3 * 14));
 

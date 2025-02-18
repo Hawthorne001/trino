@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.bigquery;
 
+import com.google.api.gax.rpc.ApiException;
 import com.google.cloud.bigquery.TableDefinition;
 import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
@@ -33,11 +34,14 @@ import io.trino.spi.connector.TableNotFoundException;
 import java.util.List;
 import java.util.Optional;
 
+import static com.google.cloud.bigquery.TableDefinition.Type.EXTERNAL;
 import static com.google.cloud.bigquery.TableDefinition.Type.MATERIALIZED_VIEW;
 import static com.google.cloud.bigquery.TableDefinition.Type.SNAPSHOT;
 import static com.google.cloud.bigquery.TableDefinition.Type.TABLE;
 import static com.google.cloud.bigquery.TableDefinition.Type.VIEW;
 import static com.google.cloud.bigquery.storage.v1.ArrowSerializationOptions.CompressionCodec.ZSTD;
+import static com.google.common.base.MoreObjects.firstNonNull;
+import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_CREATE_READ_SESSION_ERROR;
 import static io.trino.plugin.bigquery.BigQuerySessionProperties.isViewMaterializationWithFilter;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.String.format;
@@ -72,7 +76,7 @@ public class ReadSessionCreator
         this.maxCreateReadSessionRetries = maxCreateReadSessionRetries;
     }
 
-    public ReadSession create(ConnectorSession session, TableId remoteTable, List<String> selectedFields, Optional<String> filter, int parallelism)
+    public ReadSession create(ConnectorSession session, TableId remoteTable, List<BigQueryColumnHandle> selectedFields, Optional<String> filter, int currentWorkerCount)
     {
         BigQueryClient client = bigQueryClientFactory.create(session);
         TableInfo tableDetails = client.getTable(remoteTable)
@@ -81,6 +85,7 @@ public class ReadSessionCreator
         TableInfo actualTable = getActualTable(client, tableDetails, selectedFields, isViewMaterializationWithFilter(session) ? filter : Optional.empty());
 
         List<String> filteredSelectedFields = selectedFields.stream()
+                .map(BigQueryColumnHandle::getQualifiedName)
                 .map(BigQueryUtil::toBigQueryColumnName)
                 .collect(toList());
 
@@ -95,22 +100,31 @@ public class ReadSessionCreator
                         .setBufferCompression(ZSTD)
                         .build());
             }
+            // At least 100 to cater for cluster scale up
+            int desiredParallelism = Math.min(currentWorkerCount * 3, 100);
             CreateReadSessionRequest createReadSessionRequest = CreateReadSessionRequest.newBuilder()
                     .setParent("projects/" + client.getParentProjectId())
                     .setReadSession(ReadSession.newBuilder()
                             .setDataFormat(format)
                             .setTable(toTableResourceName(actualTable.getTableId()))
                             .setReadOptions(readOptions))
-                    .setMaxStreamCount(parallelism)
+                    .setPreferredMinStreamCount(desiredParallelism)
                     .build();
 
             return Failsafe.with(RetryPolicy.builder()
                             .withMaxRetries(maxCreateReadSessionRetries)
                             .withBackoff(10, 500, MILLIS)
                             .onRetry(event -> log.debug("Request failed, retrying: %s", event.getLastException()))
-                            .abortOn(failure -> !BigQueryUtil.isRetryable(failure))
+                            .handleIf(BigQueryUtil::isRetryable)
                             .build())
-                    .get(() -> bigQueryReadClient.createReadSession(createReadSessionRequest));
+                    .get(() -> {
+                        try {
+                            return bigQueryReadClient.createReadSession(createReadSessionRequest);
+                        }
+                        catch (ApiException e) {
+                            throw new TrinoException(BIGQUERY_CREATE_READ_SESSION_ERROR, "Cannot create read session" + firstNonNull(e.getMessage(), e), e);
+                        }
+                    });
         }
     }
 
@@ -122,12 +136,12 @@ public class ReadSessionCreator
     private TableInfo getActualTable(
             BigQueryClient client,
             TableInfo remoteTable,
-            List<String> requiredColumns,
+            List<BigQueryColumnHandle> requiredColumns,
             Optional<String> filter)
     {
         TableDefinition tableDefinition = remoteTable.getDefinition();
         TableDefinition.Type tableType = tableDefinition.getType();
-        if (tableType == TABLE || tableType == SNAPSHOT) {
+        if (tableType == TABLE || tableType == SNAPSHOT || tableType == EXTERNAL) {
             return remoteTable;
         }
         if (tableType == VIEW || tableType == MATERIALIZED_VIEW) {
@@ -139,7 +153,7 @@ public class ReadSessionCreator
             // get it from the view
             return client.getCachedTable(viewExpiration, remoteTable, requiredColumns, filter);
         }
-        // Storage API doesn't support reading other table types (materialized views, external)
+        // Storage API doesn't support reading other table types (materialized views, non-biglake external tables)
         throw new TrinoException(NOT_SUPPORTED, format("Table type '%s' of table '%s.%s' is not supported",
                 tableType, remoteTable.getTableId().getDataset(), remoteTable.getTableId().getTable()));
     }

@@ -119,12 +119,6 @@ public final class RunLengthEncodedBlock
     }
 
     @Override
-    public long getLogicalSizeInBytes()
-    {
-        return positionCount * value.getLogicalSizeInBytes();
-    }
-
-    @Override
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE + value.getRetainedSizeInBytes();
@@ -141,12 +135,6 @@ public final class RunLengthEncodedBlock
     {
         consumer.accept(value, value.getRetainedSizeInBytes());
         consumer.accept(this, INSTANCE_SIZE);
-    }
-
-    @Override
-    public String getEncodingName()
-    {
-        return RunLengthBlockEncoding.NAME;
     }
 
     @Override

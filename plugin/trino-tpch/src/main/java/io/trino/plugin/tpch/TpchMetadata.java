@@ -14,18 +14,20 @@
 package io.trino.plugin.tpch;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jdk8.Jdk8Module;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
+import io.airlift.json.ObjectMapperProvider;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import io.trino.plugin.tpch.statistics.ColumnStatisticsData;
 import io.trino.plugin.tpch.statistics.StatisticsEstimator;
 import io.trino.plugin.tpch.statistics.TableStatisticsData;
 import io.trino.plugin.tpch.statistics.TableStatisticsDataRepository;
+import io.trino.spi.TrinoException;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -37,6 +39,7 @@ import io.trino.spi.connector.ConnectorTableLayout;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTablePartitioning;
 import io.trino.spi.connector.ConnectorTableProperties;
+import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.LocalProperty;
@@ -80,6 +83,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Maps.asMap;
 import static io.trino.plugin.tpch.util.PredicateUtils.convertToPredicate;
 import static io.trino.plugin.tpch.util.PredicateUtils.filterOutColumnFromPredicate;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.statistics.TableStatisticType.ROW_COUNT;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
@@ -131,10 +135,17 @@ public class TpchMetadata
 
     public TpchMetadata()
     {
-        this(ColumnNaming.SIMPLIFIED, DecimalTypeMapping.DOUBLE, true, true, Optional.empty(), Optional.empty());
+        this(new ObjectMapperProvider().get(), ColumnNaming.SIMPLIFIED, DecimalTypeMapping.DOUBLE, true, true, Optional.empty(), Optional.empty());
+    }
+
+    @Inject
+    public TpchMetadata(TpchConfig config, ObjectMapper mapper)
+    {
+        this(mapper, config.getColumnNaming(), config.getDecimalTypeMapping(), config.isPredicatePushdownEnabled(), config.isPartitioningEnabled(), Optional.ofNullable(config.getTableScanRedirectionCatalog()), Optional.ofNullable(config.getTableScanRedirectionSchema()));
     }
 
     public TpchMetadata(
+            ObjectMapper objectMapper,
             ColumnNaming columnNaming,
             DecimalTypeMapping decimalTypeMapping,
             boolean predicatePushdownEnabled,
@@ -151,7 +162,7 @@ public class TpchMetadata
         this.decimalTypeMapping = decimalTypeMapping;
         this.predicatePushdownEnabled = predicatePushdownEnabled;
         this.partitioningEnabled = partitioningEnabled;
-        this.statisticsEstimator = createStatisticsEstimator();
+        this.statisticsEstimator = createStatisticsEstimator(objectMapper);
         this.destinationCatalog = destinationCatalog;
         this.destinationSchema = destinationSchema;
 
@@ -166,10 +177,8 @@ public class TpchMetadata
                 .collect(toSet());
     }
 
-    private static StatisticsEstimator createStatisticsEstimator()
+    private static StatisticsEstimator createStatisticsEstimator(ObjectMapper objectMapper)
     {
-        ObjectMapper objectMapper = new ObjectMapper()
-                .registerModule(new Jdk8Module());
         TableStatisticsDataRepository tableStatisticsDataRepository = new TableStatisticsDataRepository(objectMapper);
         return new StatisticsEstimator(tableStatisticsDataRepository);
     }
@@ -187,8 +196,12 @@ public class TpchMetadata
     }
 
     @Override
-    public TpchTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName)
+    public TpchTableHandle getTableHandle(ConnectorSession session, SchemaTableName tableName, Optional<ConnectorTableVersion> startVersion, Optional<ConnectorTableVersion> endVersion)
     {
+        if (startVersion.isPresent() || endVersion.isPresent()) {
+            throw new TrinoException(NOT_SUPPORTED, "This connector does not support versioned tables");
+        }
+
         requireNonNull(tableName, "tableName is null");
         if (!tableNames.contains(tableName.getTableName())) {
             return null;
@@ -573,7 +586,7 @@ public class TpchMetadata
         try {
             return Double.parseDouble(schemaName.substring(2));
         }
-        catch (Exception ignored) {
+        catch (Exception _) {
             return -1;
         }
     }

@@ -391,8 +391,14 @@ public class PipelinedQueryScheduler
 
     private static boolean isRetryableErrorCode(ErrorCode errorCode)
     {
-        return errorCode == null
-                || errorCode.getType() == INTERNAL_ERROR
+        if (errorCode == null) {
+            return true;
+        }
+
+        if (errorCode.isFatal()) {
+            return false;
+        }
+        return errorCode.getType() == INTERNAL_ERROR
                 || errorCode.getType() == EXTERNAL
                 || errorCode.getCode() == CLUSTER_OUT_OF_MEMORY.toErrorCode().getCode();
     }
@@ -426,7 +432,7 @@ public class PipelinedQueryScheduler
     @Override
     public synchronized void cancelStage(StageId stageId)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + queryStateMachine.getQueryId())) {
             coordinatorStagesScheduler.cancelStage(stageId);
             DistributedStagesScheduler distributedStagesScheduler = this.distributedStagesScheduler.get();
             if (distributedStagesScheduler != null) {
@@ -438,7 +444,7 @@ public class PipelinedQueryScheduler
     @Override
     public void failTask(TaskId taskId, Throwable failureCause)
     {
-        try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+        try (SetThreadName _ = new SetThreadName("Query-" + queryStateMachine.getQueryId())) {
             stageManager.failTaskRemotely(taskId, failureCause);
         }
     }
@@ -1266,7 +1272,7 @@ public class PipelinedQueryScheduler
         {
             checkState(started.compareAndSet(false, true), "already started");
 
-            try (SetThreadName ignored = new SetThreadName("Query-%s", queryStateMachine.getQueryId())) {
+            try (SetThreadName _ = new SetThreadName("Query-" + queryStateMachine.getQueryId())) {
                 stageSchedulers.values().forEach(StageScheduler::start);
                 while (!executionSchedule.isFinished()) {
                     List<ListenableFuture<Void>> blockedStages = new ArrayList<>();

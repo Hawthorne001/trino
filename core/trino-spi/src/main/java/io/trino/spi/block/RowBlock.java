@@ -255,12 +255,6 @@ public final class RowBlock
     }
 
     @Override
-    public String getEncodingName()
-    {
-        return RowBlockEncoding.NAME;
-    }
-
-    @Override
     public RowBlock copyPositions(int[] positions, int offset, int length)
     {
         checkArrayRange(positions, offset, length);
@@ -491,5 +485,11 @@ public final class RowBlock
     public RowBlock getUnderlyingValueBlock()
     {
         return this;
+    }
+
+    @Override
+    public Optional<ByteArrayBlock> getNulls()
+    {
+        return BlockUtil.getNulls(rowIsNull, 0, positionCount);
     }
 }
