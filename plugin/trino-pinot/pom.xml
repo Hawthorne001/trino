@@ -14,7 +14,7 @@
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
-        <dep.pinot.version>0.12.1</dep.pinot.version>
+        <dep.pinot.version>1.3.0</dep.pinot.version>
     </properties>
 
     <dependencyManagement>
