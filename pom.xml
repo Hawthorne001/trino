@@ -2540,7 +2540,7 @@
                                     <bannedImport>org.testcontainers.shaded.com.google.common.**</bannedImport>
                                 </bannedImports>
                             </RestrictImports>
-                            <requireProfileIdsExist />
+                            <requireProfileIdsExist/>
                             <requirePropertyDiverges>
                                 <property>project.description</property>
                             </requirePropertyDiverges>
